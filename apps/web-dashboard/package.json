@@ -1,0 +1,32 @@
+{
+  "name": "web-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@mamute/api": "file:../../packages/api",
+    "@mamute/config": "file:../../packages/config",
+    "@mamute/types": "file:../../packages/types",
+    "@mamute/ui": "file:../../packages/ui",
+    "@mamute/utils": "file:../../packages/utils",
+    "@supabase/supabase-js": "^2.48.0",
+    "next": "16.1.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.81.5",
+    "react-native-web": "~0.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.1",
+    "typescript": "^5"
+  }
+}

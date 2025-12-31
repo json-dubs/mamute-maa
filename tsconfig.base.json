@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": false,
+    "strict": true,
+    "jsx": "react-jsx",
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@mamute/ui": ["packages/ui/src"],
+      "@mamute/utils": ["packages/utils/src"],
+      "@mamute/types": ["packages/types/src"],
+      "@mamute/config": ["packages/config/src"],
+      "@mamute/api": ["packages/api/src"]
+    }
+  },
+  "include": ["packages", "apps", "supabase"]
+}

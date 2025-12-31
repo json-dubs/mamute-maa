@@ -1,0 +1,15 @@
+node_modules
+.expo
+.expo-shared
+.next
+.turbo
+dist
+build
+.DS_Store
+npm-debug.log*
+*.log
+.env*
+apps/*/npm-debug.log*
+apps/*/.env*
+supabase/.branches
+supabase/.temp

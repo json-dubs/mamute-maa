@@ -1,0 +1,27 @@
+{
+  "name": "mamute-maa",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Mamute MAA monorepo (student, instructor, web dashboard)",
+  "engines": {
+    "node": ">=20.18.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "supabase"
+  ],
+  "scripts": {
+    "dev:student": "npm run start --workspace student-app",
+    "dev:instructor": "npm run start --workspace instructor-app",
+    "dev:web": "npm run dev --workspace web-dashboard",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "eslint": "^9.14.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.3"
+  }
+}
