@@ -9,8 +9,19 @@ import {
 
 export type Tone = "default" | "success" | "warning" | "danger";
 
+export const uiColors = {
+  background: "#0b0b0b",
+  surface: "#111111",
+  surfaceAlt: "#151515",
+  border: "#2a2a2a",
+  text: "#f5f5f5",
+  muted: "#9ca3af",
+  accent: "#e11d2e",
+  accentDark: "#a3001b"
+} as const;
+
 const toneMap: Record<Tone, { bg: string; fg: string; border?: string }> = {
-  default: { bg: "#0f172a", fg: "#e2e8f0", border: "#1e293b" },
+  default: { bg: uiColors.surfaceAlt, fg: uiColors.text, border: "#1e293b" },
   success: { bg: "#064e3b", fg: "#bbf7d0", border: "#047857" },
   warning: { bg: "#713f12", fg: "#fde68a", border: "#b45309" },
   danger: { bg: "#7f1d1d", fg: "#fecdd3", border: "#b91c1c" }
@@ -86,22 +97,23 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 12,
     padding: 16,
-    backgroundColor: "#0b1220"
+    backgroundColor: uiColors.background
   },
   title: {
     fontSize: 20,
-    fontWeight: "700",
-    color: "#e2e8f0"
+    fontWeight: "800",
+    color: uiColors.text,
+    letterSpacing: 0.5
   },
   text: {
-    color: "#cbd5e1"
+    color: uiColors.text
   },
   card: {
-    backgroundColor: "#111827",
+    backgroundColor: uiColors.surface,
     padding: 12,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: uiColors.border,
     gap: 8
   },
   row: {

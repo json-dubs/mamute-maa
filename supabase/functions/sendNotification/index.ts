@@ -48,7 +48,11 @@ async function fanOutExpo(tokens: any[], payload: PushJob) {
 }
 
 function createServiceClient() {
-  const url = Deno.env.get("SUPABASE_URL")!;
-  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const url = Deno.env.get("PROJECT_URL") || Deno.env.get("SUPABASE_URL");
+  const key =
+    Deno.env.get("SERVICE_ROLE_KEY") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!url || !key) {
+    throw new Error("Missing PROJECT_URL or SERVICE_ROLE_KEY");
+  }
   return createClient(url, key, { auth: { autoRefreshToken: false } });
 }

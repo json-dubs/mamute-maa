@@ -1,6 +1,8 @@
 import React from "react";
 import FontAwesome from "@expo/vector-icons/FontAwesome";
-import { Tabs } from "expo-router";
+import { Tabs, useRouter } from "expo-router";
+import { useEffect } from "react";
+import { fetchLinkedStudents, getSupabaseClient } from "@mamute/api";
 
 function TabBarIcon(
   props: { name: React.ComponentProps<typeof FontAwesome>["name"]; color: string }
@@ -9,6 +11,28 @@ function TabBarIcon(
 }
 
 export default function TabLayout() {
+  const router = useRouter();
+
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    const check = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (!data.session) {
+        router.replace("/account");
+        return;
+      }
+      try {
+        const linked = await fetchLinkedStudents();
+        if (!linked.length) {
+          router.replace("/account");
+        }
+      } catch {
+        router.replace("/account");
+      }
+    };
+    check();
+  }, [router]);
+
   return (
     <Tabs
       screenOptions={{
@@ -22,15 +46,15 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: "Schedule",
-          tabBarIcon: ({ color }) => <TabBarIcon name="calendar" color={color} />
+          title: "Barcode",
+          tabBarIcon: ({ color }) => <TabBarIcon name="barcode" color={color} />
         }}
       />
       <Tabs.Screen
-        name="qr"
+        name="schedule"
         options={{
-          title: "My Barcode",
-          tabBarIcon: ({ color }) => <TabBarIcon name="barcode" color={color} />
+          title: "Schedule",
+          tabBarIcon: ({ color }) => <TabBarIcon name="calendar" color={color} />
         }}
       />
       <Tabs.Screen
@@ -38,6 +62,20 @@ export default function TabLayout() {
         options={{
           title: "Alerts",
           tabBarIcon: ({ color }) => <TabBarIcon name="bell" color={color} />
+        }}
+      />
+      <Tabs.Screen
+        name="account"
+        options={{
+          title: "Account",
+          tabBarIcon: ({ color }) => <TabBarIcon name="user" color={color} />
+        }}
+      />
+      <Tabs.Screen
+        name="family"
+        options={{
+          title: "Family",
+          tabBarIcon: ({ color }) => <TabBarIcon name="users" color={color} />
         }}
       />
     </Tabs>

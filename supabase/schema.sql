@@ -1,108 +1,202 @@
--- Supabase schema for Mamute MAA
-create table if not exists profiles (
-  id uuid primary key references auth.users on delete cascade,
-  role text not null check (role in ('student','parent','instructor','admin','front-desk')),
+-- Supabase schema for Mamute MAA (revamp)
+create extension if not exists "pgcrypto";
+
+create table if not exists gym_settings (
+  id int primary key check (id = 1),
+  timezone text not null default 'America/Toronto',
+  latitude numeric not null,
+  longitude numeric not null,
+  checkin_radius_m int not null default 100,
+  barcode_prefix text not null default 'MMAA-',
+  created_at timestamptz default now()
+);
+
+-- Core roles (admins are auth users; students/instructors are domain records)
+create table if not exists admins (
+  user_id uuid primary key references auth.users on delete cascade,
   full_name text not null,
   email text not null,
-  phone text,
-  guardian_for uuid references profiles(id),
   created_at timestamptz default now()
 );
 
-create table if not exists memberships (
-  profile_id uuid primary key references profiles(id) on delete cascade,
-  status text not null default 'good' check (status in ('good','delinquent','suspended')),
-  tier text,
-  renewal_date date,
-  updated_at timestamptz default now()
+create table if not exists parents (
+  user_id uuid primary key references auth.users on delete cascade,
+  first_name text,
+  last_name text,
+  email text not null,
+  created_at timestamptz default now()
 );
 
-create table if not exists classes (
+-- Students
+create table if not exists students (
   id uuid primary key default gen_random_uuid(),
-  discipline text not null,
-  title text not null,
-  instructor_id uuid references profiles(id),
-  start_at timestamptz not null,
-  end_at timestamptz not null,
-  capacity int,
-  status text not null default 'scheduled' check (status in ('scheduled','cancelled','completed')),
+  student_number int unique not null,
+  first_name text,
+  last_name text,
+  age int,
+  email text,
+  barcode_value text generated always as ('MMAA-' || student_number::text) stored unique,
+  membership_type text not null check (
+    membership_type in (
+      'adults-unlimited',
+      'kids-unlimited',
+      'striking-only',
+      'grappling-only',
+      'adults-limited-once-weekly',
+      'kids-limited-once-weekly'
+    )
+  ),
+  membership_standing text not null check (
+    membership_standing in ('active','inactive','overdue')
+  ),
+  guardian_first_name text,
+  guardian_last_name text,
+  guardian_email text,
+  created_by uuid references admins(user_id),
   created_at timestamptz default now()
 );
 
-create table if not exists enrollments (
-  profile_id uuid references profiles(id) on delete cascade,
-  class_id uuid references classes(id) on delete cascade,
-  role text not null check (role in ('student','guardian')),
-  attendance_count int default 0,
-  primary key (profile_id, class_id)
+create table if not exists student_guardians (
+  id uuid primary key default gen_random_uuid(),
+  student_id uuid references students(id) on delete cascade,
+  guardian_first_name text,
+  guardian_last_name text,
+  guardian_email text not null,
+  created_at timestamptz default now(),
+  unique (student_id, guardian_email)
 );
 
+-- Link auth users (students/parents) to student records
+create table if not exists student_access (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users on delete cascade,
+  student_id uuid references students(id) on delete cascade,
+  role text not null check (role in ('student','parent')),
+  created_at timestamptz default now(),
+  unique (user_id, student_id)
+);
+
+-- Instructors
+create table if not exists instructors (
+  id uuid primary key default gen_random_uuid(),
+  first_name text,
+  last_name text,
+  email text not null,
+  created_at timestamptz default now()
+);
+
+create table if not exists instructor_qualifications (
+  instructor_id uuid references instructors(id) on delete cascade,
+  class_type text not null,
+  primary key (instructor_id, class_type)
+);
+
+-- Recurring class schedules
+create table if not exists class_schedules (
+  id uuid primary key default gen_random_uuid(),
+  class_type text not null check (
+    class_type in (
+      'bjj-gi',
+      'bjj-nogi',
+      'kids-bjj-gi',
+      'kids-bjj-nogi',
+      'kids-wrestling',
+      'kids-strength-conditioning',
+      'kids-muay-thai',
+      'muay-thai',
+      'boxing',
+      'mma'
+    )
+  ),
+  instructor_id uuid references instructors(id),
+  day_of_week int not null check (day_of_week between 0 and 6),
+  start_time time not null,
+  end_time time not null,
+  timezone text not null default 'America/Toronto',
+  is_active boolean not null default true,
+  created_at timestamptz default now()
+);
+
+-- Attendance records
 create table if not exists attendance (
   id uuid primary key default gen_random_uuid(),
-  profile_id uuid references profiles(id) on delete cascade,
-  class_id uuid references classes(id) on delete cascade,
+  student_id uuid references students(id) on delete cascade,
+  schedule_id uuid references class_schedules(id) on delete set null,
+  session_start_at timestamptz,
+  session_end_at timestamptz,
   scanned_at timestamptz not null default now(),
   device_id text,
-  source text not null default 'web' check (source in ('web','mobile'))
-);
-
-create table if not exists payment_status (
-  profile_id uuid primary key references profiles(id) on delete cascade,
-  provider_ref text,
-  amount_due numeric,
-  due_date date,
-  last_payment_at timestamptz,
-  status text not null default 'current' check (status in ('current','due','overdue'))
-);
-
-create table if not exists notifications (
-  id uuid primary key default gen_random_uuid(),
-  type text not null check (type in ('reminder','cancel','dues','general')),
-  target jsonb not null,
-  payload jsonb not null,
-  scheduled_at timestamptz,
-  sent_at timestamptz
-);
-
-create table if not exists push_tokens (
-  profile_id uuid references profiles(id) on delete cascade,
-  expo_token text,
-  platform text not null check (platform in ('ios','android','web')),
-  updated_at timestamptz default now(),
-  primary key (profile_id, platform)
+  source text not null check (source in ('frontdesk','mobile')),
+  location_verified boolean not null default false
 );
 
 -- RLS
-alter table profiles enable row level security;
-alter table memberships enable row level security;
-alter table classes enable row level security;
-alter table enrollments enable row level security;
+alter table admins enable row level security;
+alter table parents enable row level security;
+alter table students enable row level security;
+alter table student_access enable row level security;
+alter table instructors enable row level security;
+alter table instructor_qualifications enable row level security;
+alter table class_schedules enable row level security;
 alter table attendance enable row level security;
-alter table payment_status enable row level security;
-alter table notifications enable row level security;
-alter table push_tokens enable row level security;
+alter table gym_settings enable row level security;
+alter table student_guardians enable row level security;
 
--- Simple RLS examples
-create policy "profiles self access" on profiles
-  for select using (auth.uid() = id or role in ('admin','front-desk','instructor'));
+-- Admins: self read only (writes via service role)
+create policy "admins self read" on admins
+  for select using (auth.uid() = user_id);
 
-create policy "memberships self access" on memberships
-  for select using (auth.uid() = profile_id or exists (select 1 from profiles p where p.id = auth.uid() and p.role in ('admin','front-desk','instructor')));
+create policy "admins full access students" on students
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
 
-create policy "classes readable" on classes
+create policy "admins full access instructors" on instructors
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
+
+create policy "admins full access qualifications" on instructor_qualifications
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
+
+create policy "admins full access schedules" on class_schedules
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
+
+create policy "admins full access attendance" on attendance
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
+
+create policy "admins full access guardians" on student_guardians
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
+
+create policy "admins full access gym settings" on gym_settings
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
+
+-- Student/parent access: read-only to linked student data
+create policy "student access read" on student_access
+  for select using (auth.uid() = user_id);
+
+create policy "student self read" on students
+  for select using (
+    exists (
+      select 1 from student_access sa
+      where sa.user_id = auth.uid() and sa.student_id = students.id
+    )
+  );
+
+create policy "student attendance read" on attendance
+  for select using (
+    exists (
+      select 1 from student_access sa
+      where sa.user_id = auth.uid() and sa.student_id = attendance.student_id
+    )
+  );
+
+create policy "student schedule read" on class_schedules
   for select using (true);
 
-create policy "classes instructor write" on classes
-  for insert with check (auth.uid() = instructor_id or exists (select 1 from profiles p where p.id = auth.uid() and p.role in ('admin')));
-
-create policy "enrollments self" on enrollments
-  for select using (auth.uid() = profile_id or exists (select 1 from profiles p where p.id = auth.uid() and p.role in ('admin','front-desk','instructor')));
-
-create policy "attendance self" on attendance
-  for select using (auth.uid() = profile_id or exists (select 1 from profiles p where p.id = auth.uid() and p.role in ('admin','front-desk','instructor')));
-
-create policy "attendance insert admin/frontdesk" on attendance
-  for insert with check (exists (select 1 from profiles p where p.id = auth.uid() and p.role in ('admin','front-desk','instructor')));
-
-create policy "push tokens self" on push_tokens
-  for all using (auth.uid() = profile_id);
+insert into gym_settings (id, latitude, longitude)
+values (1, 43.92171016104063, -78.87364279024405)
+on conflict (id) do nothing;

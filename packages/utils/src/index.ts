@@ -1,4 +1,9 @@
-import { ClassSchedule, MembershipStatus } from "@mamute/types";
+import {
+  ClassSchedule,
+  ClassScheduleTemplate,
+  MembershipStanding,
+  MembershipStatus
+} from "@mamute/types";
 
 type Tone = "default" | "success" | "warning" | "danger";
 
@@ -38,4 +43,22 @@ export function groupScheduleByDay(schedules: ClassSchedule[]) {
     acc[dateKey] = acc[dateKey] ? [...acc[dateKey], item] : [item];
     return acc;
   }, {});
+}
+
+export function formatTemplateTimeRange(
+  schedule: Pick<ClassScheduleTemplate, "dayOfWeek" | "startTime" | "endTime">
+) {
+  const dayLabel = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][
+    schedule.dayOfWeek
+  ];
+  return `${dayLabel} ${schedule.startTime} - ${schedule.endTime}`;
+}
+
+export function classifyStanding(status: MembershipStanding): {
+  tone: Tone;
+  label: string;
+} {
+  if (status === "active") return { tone: "success", label: "Active" };
+  if (status === "inactive") return { tone: "warning", label: "Inactive" };
+  return { tone: "danger", label: "Overdue" };
 }

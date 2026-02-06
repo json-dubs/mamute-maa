@@ -1,69 +1,64 @@
 import { getSupabaseClient } from "./client";
-import { ClassSchedule, Enrollment } from "@mamute/types";
+import { ClassScheduleTemplate } from "@mamute/types";
 
-export async function fetchSchedules(): Promise<ClassSchedule[]> {
+export async function fetchSchedules(): Promise<ClassScheduleTemplate[]> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
-    .from("classes")
+    .from("class_schedules")
     .select("*")
-    .order("start_at", { ascending: true });
+    .eq("is_active", true)
+    .order("day_of_week", { ascending: true })
+    .order("start_time", { ascending: true });
 
   if (error) throw error;
   return (
     data?.map((row: any) => ({
       ...row,
-      startAt: row.start_at ?? row.startAt,
-      endAt: row.end_at ?? row.endAt,
-      instructorId: row.instructor_id ?? row.instructorId
+      classType: row.class_type ?? row.classType,
+      instructorId: row.instructor_id ?? row.instructorId,
+      dayOfWeek: row.day_of_week ?? row.dayOfWeek,
+      startTime: row.start_time ?? row.startTime,
+      endTime: row.end_time ?? row.endTime,
+      isActive: row.is_active ?? row.isActive
     })) ?? []
   );
 }
 
-export async function fetchEnrollments(
-  profileId: string
-): Promise<Enrollment[]> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from("enrollments")
-    .select("*")
-    .eq("profile_id", profileId);
-
-  if (error) throw error;
-  return (
-    data?.map((row: any) => ({
-      ...row,
-      profileId: row.profile_id ?? row.profileId,
-      classId: row.class_id ?? row.classId
-    })) ?? []
-  );
-}
-
-export async function upsertSchedule(entry: Partial<ClassSchedule>) {
+export async function upsertSchedule(entry: Partial<ClassScheduleTemplate>) {
   const supabase = getSupabaseClient();
   const payload = {
     ...entry,
-    start_at: entry.startAt,
-    end_at: entry.endAt,
-    instructor_id: entry.instructorId
+    class_type: entry.classType,
+    instructor_id: entry.instructorId,
+    day_of_week: entry.dayOfWeek,
+    start_time: entry.startTime,
+    end_time: entry.endTime,
+    is_active: entry.isActive
   };
-  const { data, error } = await supabase.from("classes").upsert(payload).select();
+  const { data, error } = await supabase
+    .from("class_schedules")
+    .upsert(payload)
+    .select();
   if (error) throw error;
   const row = data?.[0];
   return row
     ? ({
         ...row,
-        startAt: row.start_at ?? row.startAt,
-        endAt: row.end_at ?? row.endAt,
-        instructorId: row.instructor_id ?? row.instructorId
-      } as ClassSchedule)
+        classType: row.class_type ?? row.classType,
+        instructorId: row.instructor_id ?? row.instructorId,
+        dayOfWeek: row.day_of_week ?? row.dayOfWeek,
+        startTime: row.start_time ?? row.startTime,
+        endTime: row.end_time ?? row.endTime,
+        isActive: row.is_active ?? row.isActive
+      } as ClassScheduleTemplate)
     : undefined;
 }
 
-export async function cancelClass(id: string, status = "cancelled") {
+export async function cancelClass(id: string, isActive = false) {
   const supabase = getSupabaseClient();
   const { error } = await supabase
-    .from("classes")
-    .update({ status })
+    .from("class_schedules")
+    .update({ is_active: isActive })
     .eq("id", id);
   if (error) throw error;
   return true;

@@ -26,3 +26,9 @@ export const appMeta = {
   name: "Mamute MAA",
   barcodePrefix: "MMAA-"
 };
+
+export const gymMeta = {
+  timezone: "America/Toronto",
+  location: { latitude: 43.92171016104063, longitude: -78.87364279024405 },
+  checkinRadiusMeters: 100
+};

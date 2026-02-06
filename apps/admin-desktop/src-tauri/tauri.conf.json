@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0",
+  "productName": "Mamute Admin",
+  "version": "0.1.0",
+  "identifier": "com.mamute.admin",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5174",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Mamute Admin",
+        "width": 1200,
+        "height": 800
+      }
+    ]
+  },
+  "bundle": {
+    "active": false
+  }
+}

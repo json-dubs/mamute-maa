@@ -1,65 +1,51 @@
 import { getSupabaseClient } from "./client";
-import {
-  Attendance,
-  AttendanceRequest,
-  Membership,
-  MembershipStatus
-} from "@mamute/types";
-
-export interface AttendanceResponse {
-  attendance: Attendance;
-  membership: Membership | null;
-}
+import { AttendanceRecord, CheckInRequest, CheckInResponse } from "@mamute/types";
 
 export async function recordAttendance(
-  payload: AttendanceRequest
-): Promise<AttendanceResponse> {
+  payload: CheckInRequest
+): Promise<CheckInResponse> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase.functions.invoke("recordAttendance", {
     body: payload
   });
 
   if (error) throw error;
-  const { attendance, membership } = data as any;
-  const normalized: Attendance = {
-    ...attendance,
-    scannedAt: attendance?.scanned_at ?? attendance?.scannedAt,
-    profileId: attendance?.profile_id ?? attendance?.profileId,
-    classId: attendance?.class_id ?? attendance?.classId
+  const response = data as CheckInResponse;
+  return normalizeCheckInResponse(response);
+}
+
+function normalizeCheckInResponse(response: CheckInResponse): CheckInResponse {
+  return {
+    ...response,
+    schedule: normalizeSchedule(response.schedule),
+    results: response.results.map((result) => ({
+      ...result,
+      attendance: result.attendance ? normalizeAttendance(result.attendance) : null
+    }))
   };
-  return { attendance: normalized, membership };
 }
 
-export async function fetchRecentAttendance(profileId: string) {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from("attendance")
-    .select("*")
-    .eq("profile_id", profileId)
-    .order("scanned_at", { ascending: false })
-    .limit(20);
-
-  if (error) throw error;
-  return (
-    data?.map((row: any) => ({
-      ...row,
-      scannedAt: row.scanned_at ?? row.scannedAt,
-      profileId: row.profile_id ?? row.profileId,
-      classId: row.class_id ?? row.classId
-    })) ?? []
-  );
+function normalizeSchedule(schedule: CheckInResponse["schedule"]) {
+  return {
+    ...schedule,
+    classType: (schedule as any).class_type ?? schedule.classType,
+    instructorId: (schedule as any).instructor_id ?? schedule.instructorId,
+    dayOfWeek: (schedule as any).day_of_week ?? schedule.dayOfWeek,
+    startTime: (schedule as any).start_time ?? schedule.startTime,
+    endTime: (schedule as any).end_time ?? schedule.endTime
+  };
 }
 
-export async function fetchMembershipStatus(
-  profileId: string
-): Promise<MembershipStatus> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from("memberships")
-    .select("status")
-    .eq("profile_id", profileId)
-    .maybeSingle();
-
-  if (error) throw error;
-  return (data?.status as MembershipStatus) ?? "good";
+function normalizeAttendance(attendance: AttendanceRecord): AttendanceRecord {
+  return {
+    ...attendance,
+    studentId: (attendance as any).student_id ?? attendance.studentId,
+    scheduleId: (attendance as any).schedule_id ?? attendance.scheduleId,
+    sessionStartAt: (attendance as any).session_start_at ?? attendance.sessionStartAt,
+    sessionEndAt: (attendance as any).session_end_at ?? attendance.sessionEndAt,
+    scannedAt: (attendance as any).scanned_at ?? attendance.scannedAt,
+    deviceId: (attendance as any).device_id ?? attendance.deviceId,
+    locationVerified:
+      (attendance as any).location_verified ?? attendance.locationVerified
+  };
 }
