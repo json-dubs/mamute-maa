@@ -46,8 +46,8 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: "Barcode",
-          tabBarIcon: ({ color }) => <TabBarIcon name="barcode" color={color} />
+          title: "Check-In",
+          tabBarIcon: ({ color }) => <TabBarIcon name="check-square" color={color} />
         }}
       />
       <Tabs.Screen
@@ -58,24 +58,10 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="notifications"
-        options={{
-          title: "Alerts",
-          tabBarIcon: ({ color }) => <TabBarIcon name="bell" color={color} />
-        }}
-      />
-      <Tabs.Screen
         name="account"
         options={{
           title: "Account",
           tabBarIcon: ({ color }) => <TabBarIcon name="user" color={color} />
-        }}
-      />
-      <Tabs.Screen
-        name="family"
-        options={{
-          title: "Family",
-          tabBarIcon: ({ color }) => <TabBarIcon name="users" color={color} />
         }}
       />
     </Tabs>

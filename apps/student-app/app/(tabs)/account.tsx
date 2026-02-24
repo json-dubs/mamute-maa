@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, TextInput } from "react-native";
-import { Screen, Card, Text, uiColors } from "@mamute/ui";
+import { Badge, Card, Row, Screen, Text, uiColors } from "@mamute/ui";
 import { HeroHeader } from "../../components/HeroHeader";
 import {
   fetchLinkedStudents,
@@ -9,6 +9,8 @@ import {
   verifyMobileEmail,
   verifyMobileStudentNumbers
 } from "@mamute/api";
+import { LinkedStudentSummary } from "@mamute/types";
+import { classifyStanding } from "@mamute/utils";
 
 type LinkStep = "email" | "students";
 
@@ -56,7 +58,7 @@ export default function AccountScreen() {
     Array<{ id: string; studentNumber: number; firstName?: string | null; lastName?: string | null }>
   >([]);
 
-  const [linkedStudents, setLinkedStudents] = useState<string[]>([]);
+  const [linkedStudents, setLinkedStudents] = useState<LinkedStudentSummary[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -76,9 +78,7 @@ export default function AccountScreen() {
       return;
     }
     fetchLinkedStudents()
-      .then((rows) =>
-        setLinkedStudents(rows.map((row) => [row.firstName, row.lastName].filter(Boolean).join(" ")))
-      )
+      .then((rows) => setLinkedStudents(rows))
       .catch(() => setLinkedStudents([]));
   }, [sessionUserId]);
 
@@ -144,7 +144,7 @@ export default function AccountScreen() {
       }, session.access_token);
 
       const linked = await fetchLinkedStudents();
-      setLinkedStudents(linked.map((row) => [row.firstName, row.lastName].filter(Boolean).join(" ")));
+      setLinkedStudents(linked);
 
       setMessage("App linked on this device.");
       setStep("email");
@@ -179,9 +179,26 @@ export default function AccountScreen() {
         <HeroHeader title="Account" />
         <Card>
           <Text>App linked on this device.</Text>
-          <Text style={{ color: uiColors.muted, marginTop: 6 }}>
-            Linked students: {linkedStudents.join(", ")}
-          </Text>
+          {linkedStudents.map((student) => {
+            const standingView = classifyStanding(student.membershipStanding);
+            const studentName = [student.firstName, student.lastName].filter(Boolean).join(" ");
+            const guardians = student.guardianNames?.length
+              ? student.guardianNames.join(", ")
+              : "None listed";
+            return (
+              <Card key={student.studentId} style={{ marginTop: 8 }}>
+                <Row>
+                  <Text style={{ fontWeight: "700" }}>{studentName || "Student"}</Text>
+                  <Badge tone={standingView.tone} label={standingView.label} />
+                </Row>
+                <Text style={{ color: uiColors.muted }}>Student #: {student.studentNumber}</Text>
+                <Text style={{ color: uiColors.muted }}>
+                  Membership: {formatMembershipType(student.membershipType)}
+                </Text>
+                <Text style={{ color: uiColors.muted }}>Guardian name(s): {guardians}</Text>
+              </Card>
+            );
+          })}
           <Pressable onPress={unlinkDevice} style={[buttonStyle, { marginTop: 12 }]}>
             <Text style={buttonTextStyle}>Break link on this device</Text>
           </Pressable>
@@ -284,3 +301,11 @@ const linkStyle = {
   color: uiColors.accent,
   marginTop: 10
 };
+
+function formatMembershipType(value?: string | null) {
+  if (!value) return "Unknown";
+  return value
+    .split("-")
+    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
+    .join(" ");
+}

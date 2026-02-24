@@ -48,6 +48,8 @@ export interface ClassScheduleTemplate {
   id: string;
   classType: ClassType;
   instructorId?: string | null;
+  instructorFirstName?: string | null;
+  instructorLastName?: string | null;
   dayOfWeek: number;
   startTime: string;
   endTime: string;
@@ -109,6 +111,8 @@ export interface LinkedStudentSummary {
   studentNumber: number;
   firstName?: string | null;
   lastName?: string | null;
+  guardianNames?: string[];
+  membershipType?: MembershipType;
   membershipStanding: MembershipStanding;
   barcodeValue?: string | null;
 }

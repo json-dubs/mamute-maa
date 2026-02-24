@@ -1,14 +1,37 @@
 import { getSupabaseClient } from "./client";
 import { ClassScheduleTemplate } from "@mamute/types";
 
-export async function fetchSchedules(): Promise<ClassScheduleTemplate[]> {
+export async function fetchSchedules(options?: {
+  includeCancelled?: boolean;
+}): Promise<ClassScheduleTemplate[]> {
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase
+  let queryWithInstructor = supabase
     .from("class_schedules")
-    .select("*")
-    .eq("is_active", true)
+    .select(
+      "id, class_type, instructor_id, day_of_week, start_time, end_time, timezone, is_active, instructors:instructor_id(first_name, last_name)"
+    )
     .order("day_of_week", { ascending: true })
     .order("start_time", { ascending: true });
+  if (!options?.includeCancelled) {
+    queryWithInstructor = queryWithInstructor.eq("is_active", true);
+  }
+
+  let { data, error } = await queryWithInstructor;
+  if (error) {
+    let fallbackQuery = supabase
+      .from("class_schedules")
+      .select(
+        "id, class_type, instructor_id, day_of_week, start_time, end_time, timezone, is_active"
+      )
+      .order("day_of_week", { ascending: true })
+      .order("start_time", { ascending: true });
+    if (!options?.includeCancelled) {
+      fallbackQuery = fallbackQuery.eq("is_active", true);
+    }
+    const fallback = await fallbackQuery;
+    data = fallback.data;
+    error = fallback.error;
+  }
 
   if (error) throw error;
   return (
@@ -19,7 +42,13 @@ export async function fetchSchedules(): Promise<ClassScheduleTemplate[]> {
       dayOfWeek: row.day_of_week ?? row.dayOfWeek,
       startTime: row.start_time ?? row.startTime,
       endTime: row.end_time ?? row.endTime,
-      isActive: row.is_active ?? row.isActive
+      isActive: row.is_active ?? row.isActive,
+      instructorFirstName:
+        (Array.isArray(row.instructors) ? row.instructors[0]?.first_name : row.instructors?.first_name) ??
+        null,
+      instructorLastName:
+        (Array.isArray(row.instructors) ? row.instructors[0]?.last_name : row.instructors?.last_name) ??
+        null
     })) ?? []
   );
 }

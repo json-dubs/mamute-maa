@@ -223,6 +223,17 @@ create policy "admins full access gym settings" on gym_settings
   for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
   with check (exists (select 1 from admins a where a.user_id = auth.uid()));
 
+create policy "student guardians read linked" on student_guardians
+  for select using (
+    exists (
+      select 1 from student_access sa
+      where sa.user_id = auth.uid() and sa.student_id = student_guardians.student_id
+    )
+  );
+
+create policy "student instructors read" on instructors
+  for select using (auth.role() = 'authenticated');
+
 -- Student/parent access: read-only to linked student data
 create policy "student access read" on student_access
   for select using (auth.uid() = user_id);

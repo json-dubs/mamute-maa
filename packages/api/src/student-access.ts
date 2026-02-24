@@ -68,21 +68,53 @@ export async function linkStudentAccess(
 
 export async function fetchLinkedStudents(): Promise<LinkedStudentSummary[]> {
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from("student_access")
-    .select("student_id, role, students:student_id(id, student_number, first_name, last_name, membership_standing, barcode_value)")
+    .select(
+      "student_id, role, students:student_id(id, student_number, first_name, last_name, membership_type, membership_standing, barcode_value, student_guardians(guardian_first_name, guardian_last_name))"
+    )
     .order("created_at", { ascending: true });
+
+  if (error) {
+    const fallback = await supabase
+      .from("student_access")
+      .select(
+        "student_id, role, students:student_id(id, student_number, first_name, last_name, membership_type, membership_standing, barcode_value)"
+      )
+      .order("created_at", { ascending: true });
+    data = fallback.data;
+    error = fallback.error;
+  }
 
   if (error) throw error;
   return (
-    data?.map((row: any) => ({
-      studentId: row.students?.id ?? row.student_id,
-      studentNumber: row.students?.student_number,
-      firstName: row.students?.first_name,
-      lastName: row.students?.last_name,
-      membershipStanding: row.students?.membership_standing,
-      barcodeValue: row.students?.barcode_value ?? null
-    })) ?? []
+    data?.map((row: any) => {
+      const guardians = Array.isArray(row.students?.student_guardians)
+        ? row.students.student_guardians
+        : [];
+      const guardianNames = [
+        ...new Set(
+          guardians
+            .map((guardian: any) =>
+              [guardian.guardian_first_name, guardian.guardian_last_name]
+                .filter(Boolean)
+                .join(" ")
+                .trim()
+            )
+            .filter(Boolean)
+        )
+      ];
+      return {
+        studentId: row.students?.id ?? row.student_id,
+        studentNumber: row.students?.student_number,
+        firstName: row.students?.first_name,
+        lastName: row.students?.last_name,
+        guardianNames,
+        membershipType: row.students?.membership_type,
+        membershipStanding: row.students?.membership_standing,
+        barcodeValue: row.students?.barcode_value ?? null
+      };
+    }) ?? []
   );
 }
 
