@@ -3,7 +3,8 @@ import { createClient } from "npm:@supabase/supabase-js";
 
 interface CreateAdminRequest {
   email: string;
-  fullName: string;
+  firstName: string;
+  lastName: string;
 }
 
 Deno.serve(async (req) => {
@@ -45,13 +46,16 @@ Deno.serve(async (req) => {
   }
 
   const payload = (await req.json()) as CreateAdminRequest;
-  if (!payload?.email || !payload?.fullName) {
+  if (!payload?.email || !payload?.firstName || !payload?.lastName) {
     return Response.json({ error: "MISSING_FIELDS" }, { status: 400 });
   }
 
   const { data: created, error: createError } =
     await supabase.auth.admin.inviteUserByEmail(payload.email, {
-      data: { full_name: payload.fullName }
+      data: {
+        first_name: payload.firstName.trim(),
+        last_name: payload.lastName.trim()
+      }
     });
 
   if (createError || !created.user) {
@@ -63,7 +67,8 @@ Deno.serve(async (req) => {
 
   const { error: insertError } = await supabase.from("admins").insert({
     user_id: created.user.id,
-    full_name: payload.fullName,
+    first_name: payload.firstName.trim(),
+    last_name: payload.lastName.trim(),
     email: payload.email
   });
 

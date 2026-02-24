@@ -32,20 +32,21 @@ Deno.serve(async (req) => {
   if (!payload?.guardianEmail || !payload?.children?.length) {
     return Response.json({ error: "MISSING_FIELDS" }, { status: 400 });
   }
+  const guardianEmail = payload.guardianEmail.trim().toLowerCase();
 
   const students: Array<{
     id: string;
     studentNumber: number;
-    fullName: string;
+    firstName?: string | null;
+    lastName?: string | null;
   }> = [];
-  let guardianName: string | null = null;
+  let guardianFirstName: string | null = null;
+  let guardianLastName: string | null = null;
 
   for (const child of payload.children) {
     const { data: student, error: studentError } = await supabase
       .from("students")
-      .select(
-        "id, student_number, first_name, last_name, guardian_first_name, guardian_last_name, guardian_email"
-      )
+      .select("id, student_number, first_name, last_name")
       .eq("student_number", child.studentNumber)
       .maybeSingle();
     if (studentError) {
@@ -58,62 +59,38 @@ Deno.serve(async (req) => {
     if (!matchesLastName(lastName, child.lastName)) {
       return Response.json({ error: "DETAILS_MISMATCH" }, { status: 403 });
     }
-    const primaryMatch = emailsMatch(
-      student.guardian_email ?? "",
-      payload.guardianEmail
-    );
-    const extraGuardian = await lookupAdditionalGuardian(
+    const guardian = await lookupGuardian(
       supabase,
       student.id,
-      payload.guardianEmail
+      guardianEmail
     );
-    if (!primaryMatch && !extraGuardian) {
+    if (!guardian) {
       return Response.json({ error: "GUARDIAN_EMAIL_MISMATCH" }, { status: 403 });
     }
-    guardianName =
-      guardianName ??
-      (primaryMatch
-        ? buildGuardianName(
-            student.guardian_first_name,
-            student.guardian_last_name
-          )
-        : buildGuardianName(
-            extraGuardian?.guardian_first_name,
-            extraGuardian?.guardian_last_name
-          ));
+    if (!guardianFirstName && !guardianLastName) {
+      guardianFirstName = guardian.guardian_first_name ?? null;
+      guardianLastName = guardian.guardian_last_name ?? null;
+    }
     students.push({
       id: student.id,
       studentNumber: student.student_number,
-      fullName: [student.first_name, student.last_name].filter(Boolean).join(" ")
+      firstName: student.first_name ?? null,
+      lastName: student.last_name ?? null
     });
   }
 
-  if (!guardianName) {
+  if (!guardianFirstName && !guardianLastName) {
     return Response.json({ error: "GUARDIAN_NAME_MISSING" }, { status: 400 });
   }
 
-  return Response.json({ guardianName, students });
+  return Response.json({ guardianFirstName, guardianLastName, students });
 });
 
-function matchesLastName(fullName: string, lastName: string) {
-  return fullName.trim().toLowerCase() === lastName.trim().toLowerCase();
+function matchesLastName(value: string, lastName: string) {
+  return value.trim().toLowerCase() === lastName.trim().toLowerCase();
 }
 
-function emailsMatch(expected: string, provided: string) {
-  return expected.trim().toLowerCase() === provided.trim().toLowerCase();
-}
-
-function buildGuardianName(
-  firstName?: string | null,
-  lastName?: string | null
-) {
-  if (firstName || lastName) {
-    return `${firstName ?? ""} ${lastName ?? ""}`.trim();
-  }
-  return null;
-}
-
-async function lookupAdditionalGuardian(
+async function lookupGuardian(
   client: any,
   studentId: string,
   email: string
@@ -122,7 +99,7 @@ async function lookupAdditionalGuardian(
     .from("student_guardians")
     .select("guardian_first_name, guardian_last_name")
     .eq("student_id", studentId)
-    .eq("guardian_email", email)
+    .ilike("guardian_email", email)
     .maybeSingle();
   return data ?? null;
 }

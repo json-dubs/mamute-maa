@@ -49,12 +49,13 @@ Deno.serve(async (req) => {
     student: {
       id: student.id,
       studentNumber: student.student_number,
-      fullName: [student.first_name, student.last_name].filter(Boolean).join(" "),
+      firstName: student.first_name ?? null,
+      lastName: student.last_name ?? null,
       email: student.email ?? null
     }
   });
 });
 
-function matchesLastName(fullName: string, lastName: string) {
-  return fullName.trim().toLowerCase() === lastName.trim().toLowerCase();
+function matchesLastName(value: string, lastName: string) {
+  return value.trim().toLowerCase() === lastName.trim().toLowerCase();
 }

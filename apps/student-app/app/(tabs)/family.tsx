@@ -10,8 +10,10 @@ import { classifyStanding } from "@mamute/utils";
 
 export default function FamilyScreen() {
   const [studentNumber, setStudentNumber] = useState("");
-  const [studentName, setStudentName] = useState("");
-  const [parentName, setParentName] = useState("");
+  const [studentFirstName, setStudentFirstName] = useState("");
+  const [studentLastName, setStudentLastName] = useState("");
+  const [guardianFirstName, setGuardianFirstName] = useState("");
+  const [guardianLastName, setGuardianLastName] = useState("");
   const [students, setStudents] = useState<LinkedStudentSummary[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -39,19 +41,28 @@ export default function FamilyScreen() {
 
   const linkStudent = async () => {
     const parsedNumber = Number.parseInt(studentNumber, 10);
-    if (!Number.isFinite(parsedNumber) || !studentName.trim()) {
-      Alert.alert("Missing info", "Enter student number and full name.");
+    if (
+      !Number.isFinite(parsedNumber) ||
+      !studentFirstName.trim() ||
+      !studentLastName.trim()
+    ) {
+      Alert.alert("Missing info", "Enter student number, first name, and last name.");
       return;
     }
     setLoading(true);
     try {
       await linkStudentAccess({
         studentNumber: parsedNumber,
-        studentName: studentName.trim(),
-        parentName: parentName.trim() || undefined
+        studentFirstName: studentFirstName.trim(),
+        studentLastName: studentLastName.trim(),
+        guardianFirstName: guardianFirstName.trim() || undefined,
+        guardianLastName: guardianLastName.trim() || undefined
       });
       setStudentNumber("");
-      setStudentName("");
+      setStudentFirstName("");
+      setStudentLastName("");
+      setGuardianFirstName("");
+      setGuardianLastName("");
       await load();
     } catch (error: any) {
       Alert.alert("Link failed", error?.message ?? "Unable to link student.");
@@ -125,16 +136,30 @@ export default function FamilyScreen() {
           style={inputStyle}
         />
         <TextInput
-          value={studentName}
-          onChangeText={setStudentName}
-          placeholder="Student full name"
+          value={studentFirstName}
+          onChangeText={setStudentFirstName}
+          placeholder="Student first name"
           placeholderTextColor={uiColors.muted}
           style={inputStyle}
         />
         <TextInput
-          value={parentName}
-          onChangeText={setParentName}
-          placeholder="Parent name (optional)"
+          value={studentLastName}
+          onChangeText={setStudentLastName}
+          placeholder="Student last name"
+          placeholderTextColor={uiColors.muted}
+          style={inputStyle}
+        />
+        <TextInput
+          value={guardianFirstName}
+          onChangeText={setGuardianFirstName}
+          placeholder="Guardian first name (optional)"
+          placeholderTextColor={uiColors.muted}
+          style={inputStyle}
+        />
+        <TextInput
+          value={guardianLastName}
+          onChangeText={setGuardianLastName}
+          placeholder="Guardian last name (optional)"
           placeholderTextColor={uiColors.muted}
           style={inputStyle}
         />
@@ -174,7 +199,7 @@ export default function FamilyScreen() {
               >
                 <Row>
                   <Text>
-                    {isSelected ? "✓" : "○"} {displayName || "Student"}
+                    {isSelected ? "[x]" : "[ ]"} {displayName || "Student"}
                   </Text>
                   <Badge tone={statusView.tone} label={statusView.label} />
                 </Row>
@@ -245,3 +270,4 @@ const selectionStyle = {
 const selectionStyleSelected = {
   borderColor: uiColors.accent
 };
+

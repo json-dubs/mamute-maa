@@ -1,9 +1,14 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+﻿import { FormEvent, useEffect, useMemo, useState } from "react";
 import { createClient, Session } from "@supabase/supabase-js";
 import logo from "../../student-app/assets/images/MamuteLogo.png";
 
 type CheckInResult = {
-  student: { studentNumber: number; fullName: string; membershipStanding: string };
+  student: {
+    studentNumber: number;
+    firstName?: string | null;
+    lastName?: string | null;
+    membershipStanding: string;
+  };
   attendance?: { scannedAt: string } | null;
   blocked: boolean;
   reason?: string;
@@ -35,9 +40,6 @@ type StudentRecord = {
     | "adults-limited-once-weekly"
     | "kids-limited-once-weekly";
   membership_standing: "active" | "inactive" | "overdue";
-  guardian_first_name: string | null;
-  guardian_last_name: string | null;
-  guardian_email: string | null;
 };
 
 type InstructorRecord = {
@@ -73,16 +75,24 @@ type ClassScheduleRecord = {
   is_active: boolean;
 };
 
+type AttendanceStudent = {
+  first_name: string | null;
+  last_name: string | null;
+  student_number: number;
+};
+
+type AttendanceSchedule = {
+  class_type: ClassScheduleRecord["class_type"];
+  day_of_week: number;
+  start_time: string;
+};
+
 type AttendanceRecord = {
   id: string;
   scanned_at: string;
   source: string;
-  students?: { full_name: string; student_number: number } | null;
-  class_schedules?: {
-    class_type: ClassScheduleRecord["class_type"];
-    day_of_week: number;
-    start_time: string;
-  } | null;
+  students?: AttendanceStudent | AttendanceStudent[] | null;
+  class_schedules?: AttendanceSchedule | AttendanceSchedule[] | null;
 };
 
 type StudentGuardianRecord = {
@@ -159,7 +169,8 @@ export function App() {
   const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isAdminLoading, setIsAdminLoading] = useState(false);
-  const [adminCreateName, setAdminCreateName] = useState("");
+  const [adminCreateFirstName, setAdminCreateFirstName] = useState("");
+  const [adminCreateLastName, setAdminCreateLastName] = useState("");
   const [adminCreateEmail, setAdminCreateEmail] = useState("");
   const [adminCreateMessage, setAdminCreateMessage] = useState<string | null>(null);
   const [isAdminCreating, setIsAdminCreating] = useState(false);
@@ -188,9 +199,6 @@ export function App() {
     useState<StudentRecord["membership_type"]>("adults-unlimited");
   const [studentMembershipStanding, setStudentMembershipStanding] =
     useState<StudentRecord["membership_standing"]>("active");
-  const [studentGuardianFirstName, setStudentGuardianFirstName] = useState("");
-  const [studentGuardianLastName, setStudentGuardianLastName] = useState("");
-  const [studentGuardianEmail, setStudentGuardianEmail] = useState("");
   const [guardianRows, setGuardianRows] = useState<StudentGuardianRecord[]>([]);
   const [allGuardianRows, setAllGuardianRows] = useState<StudentGuardianRecord[]>([]);
   const [guardianFirstName, setGuardianFirstName] = useState("");
@@ -219,15 +227,6 @@ export function App() {
   const [schedules, setSchedules] = useState<ClassScheduleRecord[]>([]);
   const [schedulesMessage, setSchedulesMessage] = useState<string | null>(null);
   const [isSchedulesLoading, setIsSchedulesLoading] = useState(false);
-  const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null);
-  const [scheduleClassType, setScheduleClassType] =
-    useState<ClassScheduleRecord["class_type"]>("bjj-gi");
-  const [scheduleInstructorId, setScheduleInstructorId] = useState("");
-  const [scheduleDayOfWeek, setScheduleDayOfWeek] = useState("1");
-  const [scheduleStartTime, setScheduleStartTime] = useState("18:00");
-  const [scheduleEndTime, setScheduleEndTime] = useState("19:00");
-  const [scheduleTimezone, setScheduleTimezone] = useState("America/Toronto");
-  const [scheduleIsActive, setScheduleIsActive] = useState(true);
   const [isScheduleEditing, setIsScheduleEditing] = useState(false);
 
   const supabase = useMemo(() => {
@@ -310,12 +309,14 @@ export function App() {
     try {
       const { error } = await supabase.functions.invoke("createAdminUser", {
         body: {
-          fullName: adminCreateName.trim(),
+          firstName: adminCreateFirstName.trim(),
+          lastName: adminCreateLastName.trim(),
           email: adminCreateEmail.trim()
         }
       });
       if (error) throw error;
-      setAdminCreateName("");
+      setAdminCreateFirstName("");
+      setAdminCreateLastName("");
       setAdminCreateEmail("");
       setAdminCreateMessage("Invite sent. They will set their password by email.");
     } catch (error: any) {
@@ -394,9 +395,6 @@ export function App() {
     setStudentEmail(student.email ?? "");
     setStudentMembershipType(student.membership_type);
     setStudentMembershipStanding(student.membership_standing);
-    setStudentGuardianFirstName(student.guardian_first_name ?? "");
-    setStudentGuardianLastName(student.guardian_last_name ?? "");
-    setStudentGuardianEmail(student.guardian_email ?? "");
     setPendingGuardians([]);
     loadGuardians(student.id);
   };
@@ -410,9 +408,6 @@ export function App() {
     setStudentEmail("");
     setStudentMembershipType("adults-unlimited");
     setStudentMembershipStanding("active");
-    setStudentGuardianFirstName("");
-    setStudentGuardianLastName("");
-    setStudentGuardianEmail("");
     setGuardianRows([]);
     setGuardianFirstName("");
     setGuardianLastName("");
@@ -442,11 +437,9 @@ export function App() {
       age: studentAge ? Number.parseInt(studentAge, 10) : null,
       email: studentEmail.trim() || null,
       membership_type: studentMembershipType,
-      membership_standing: studentMembershipStanding,
-      guardian_first_name: studentGuardianFirstName.trim() || null,
-      guardian_last_name: studentGuardianLastName.trim() || null,
-      guardian_email: studentGuardianEmail.trim() || null
+      membership_standing: studentMembershipStanding
     };
+    const guardianDrafts = normalizeGuardians(pendingGuardians);
 
     try {
       if (editingStudentId) {
@@ -455,6 +448,7 @@ export function App() {
           .update(payload)
           .eq("id", editingStudentId);
         if (error) throw error;
+        await upsertGuardiansForStudent(editingStudentId, guardianDrafts);
       } else {
         const { data, error } = await supabase
           .from("students")
@@ -463,18 +457,8 @@ export function App() {
           .single();
         if (error) throw error;
         const studentId = data?.id;
-        if (studentId && pendingGuardians.length) {
-          const { error: guardianError } = await supabase
-            .from("student_guardians")
-            .insert(
-              pendingGuardians.map((guardian) => ({
-                student_id: studentId,
-                guardian_first_name: guardian.guardian_first_name,
-                guardian_last_name: guardian.guardian_last_name,
-                guardian_email: guardian.guardian_email
-              }))
-            );
-          if (guardianError) throw guardianError;
+        if (studentId) {
+          await upsertGuardiansForStudent(studentId, guardianDrafts);
         }
       }
       resetStudentForm();
@@ -502,8 +486,49 @@ export function App() {
   const parseCsvLine = (line: string) =>
     line
       .split(",")
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0);
+      .map((item) => item.trim());
+
+  const normalizeGuardians = (guardians: PendingGuardian[]) => {
+    const byEmail = new Map<string, PendingGuardian>();
+    for (const guardian of guardians) {
+      const normalizedEmail = guardian.guardian_email?.trim().toLowerCase();
+      if (!normalizedEmail) continue;
+      const existing = byEmail.get(normalizedEmail);
+      if (existing) {
+        byEmail.set(normalizedEmail, {
+          ...existing,
+          guardian_first_name:
+            existing.guardian_first_name ?? guardian.guardian_first_name ?? null,
+          guardian_last_name:
+            existing.guardian_last_name ?? guardian.guardian_last_name ?? null
+        });
+        continue;
+      }
+      byEmail.set(normalizedEmail, {
+        ...guardian,
+        guardian_email: normalizedEmail
+      });
+    }
+    return [...byEmail.values()];
+  };
+
+  const upsertGuardiansForStudent = async (
+    studentId: string,
+    guardians: PendingGuardian[]
+  ) => {
+    const normalized = normalizeGuardians(guardians);
+    if (!normalized.length) return;
+    const { error } = await supabase.from("student_guardians").upsert(
+      normalized.map((guardian) => ({
+        student_id: studentId,
+        guardian_first_name: guardian.guardian_first_name,
+        guardian_last_name: guardian.guardian_last_name,
+        guardian_email: guardian.guardian_email
+      })),
+      { onConflict: "student_id,guardian_email" }
+    );
+    if (error) throw error;
+  };
 
   const importStudentsCsv = async () => {
     if (!session) {
@@ -525,7 +550,7 @@ export function App() {
       const hasHeader = header.includes("student_number");
       const startIndex = hasHeader ? 1 : 0;
       const rows = lines.slice(startIndex).map(parseCsvLine);
-      const payload = rows.map((row) => {
+      const parsedRows = rows.map((row) => {
         const [
           studentNumber,
           firstName,
@@ -548,11 +573,20 @@ export function App() {
           membership_standing: membershipStanding,
           guardian_first_name: guardianFirstName || null,
           guardian_last_name: guardianLastName || null,
-          guardian_email: guardianEmail || null
+          guardian_email: guardianEmail ? guardianEmail.toLowerCase() : null
         };
       });
+      const studentPayload = parsedRows.map((row) => ({
+        student_number: row.student_number,
+        first_name: row.first_name,
+        last_name: row.last_name,
+        age: row.age,
+        email: row.email,
+        membership_type: row.membership_type,
+        membership_standing: row.membership_standing
+      }));
 
-      const invalid = payload.find(
+      const invalid = studentPayload.find(
         (row) =>
           !Number.isFinite(row.student_number) ||
           !row.first_name ||
@@ -565,10 +599,58 @@ export function App() {
         return;
       }
 
-      const { error } = await supabase.from("students").insert(payload);
+      const { data: inserted, error } = await supabase
+        .from("students")
+        .insert(studentPayload)
+        .select("id, student_number");
       if (error) throw error;
+
+      const idsByNumber = new Map(
+        ((inserted as Array<{ id: string; student_number: number }> | null) ?? []).map(
+          (row) => [row.student_number, row.id]
+        )
+      );
+      const guardianByStudentAndEmail = new Map<
+        string,
+        {
+          student_id: string;
+          guardian_first_name: string | null;
+          guardian_last_name: string | null;
+          guardian_email: string;
+        }
+      >();
+      for (const row of parsedRows) {
+        if (!row.guardian_email) continue;
+        const studentId = idsByNumber.get(row.student_number);
+        if (!studentId) continue;
+        const key = `${studentId}:${row.guardian_email}`;
+        const existing = guardianByStudentAndEmail.get(key);
+        if (existing) {
+          guardianByStudentAndEmail.set(key, {
+            ...existing,
+            guardian_first_name: existing.guardian_first_name ?? row.guardian_first_name,
+            guardian_last_name: existing.guardian_last_name ?? row.guardian_last_name
+          });
+          continue;
+        }
+        guardianByStudentAndEmail.set(key, {
+          student_id: studentId,
+          guardian_first_name: row.guardian_first_name,
+          guardian_last_name: row.guardian_last_name,
+          guardian_email: row.guardian_email
+        });
+      }
+      const guardianPayload = [...guardianByStudentAndEmail.values()];
+      if (guardianPayload.length) {
+        const { error: guardianError } = await supabase
+          .from("student_guardians")
+          .upsert(guardianPayload, { onConflict: "student_id,guardian_email" });
+        if (guardianError) throw guardianError;
+      }
+
       setCsvInput("");
       await loadStudents();
+      await loadAllGuardians();
     } catch (error: any) {
       setStudentsMessage(error?.message ?? "Failed to import students");
     } finally {
@@ -690,7 +772,7 @@ export function App() {
         .order("scanned_at", { ascending: false })
         .limit(50);
       if (error) throw error;
-      setAttendanceRows((data as AttendanceRecord[]) ?? []);
+      setAttendanceRows((data as unknown as AttendanceRecord[]) ?? []);
     } catch (error: any) {
       setAttendanceMessage(error?.message ?? "Failed to load attendance");
     } finally {
@@ -735,7 +817,8 @@ export function App() {
 
   const addGuardian = async () => {
     if (!session) return;
-    if (!guardianEmail.trim()) {
+    const normalizedEmail = guardianEmail.trim().toLowerCase();
+    if (!normalizedEmail) {
       setGuardianMessage("Enter guardian email.");
       return;
     }
@@ -747,19 +830,27 @@ export function App() {
           student_id: editingStudentId,
           guardian_first_name: guardianFirstName.trim() || null,
           guardian_last_name: guardianLastName.trim() || null,
-          guardian_email: guardianEmail.trim()
+          guardian_email: normalizedEmail
         });
         if (error) throw error;
         await loadGuardians(editingStudentId);
         await loadAllGuardians();
       } else {
+        if (
+          pendingGuardians.some(
+            (guardian) => guardian.guardian_email.toLowerCase() === normalizedEmail
+          )
+        ) {
+          setGuardianMessage("This guardian email is already in the list.");
+          return;
+        }
         setPendingGuardians((prev) => [
           ...prev,
           {
             id: crypto.randomUUID(),
             guardian_first_name: guardianFirstName.trim() || null,
             guardian_last_name: guardianLastName.trim() || null,
-            guardian_email: guardianEmail.trim()
+            guardian_email: normalizedEmail
           }
         ]);
       }
@@ -796,88 +887,6 @@ export function App() {
       setGuardianMessage(error?.message ?? "Failed to remove guardian");
     } finally {
       setIsGuardianLoading(false);
-    }
-  };
-
-  const startEditSchedule = (schedule: ClassScheduleRecord) => {
-    setEditingScheduleId(schedule.id);
-    setScheduleClassType(schedule.class_type);
-    setScheduleInstructorId(schedule.instructor_id ?? "");
-    setScheduleDayOfWeek(String(schedule.day_of_week));
-    setScheduleStartTime(schedule.start_time);
-    setScheduleEndTime(schedule.end_time);
-    setScheduleTimezone(schedule.timezone);
-    setScheduleIsActive(schedule.is_active);
-  };
-
-  const resetScheduleForm = () => {
-    setEditingScheduleId(null);
-    setScheduleClassType("bjj-gi");
-    setScheduleInstructorId("");
-    setScheduleDayOfWeek("1");
-    setScheduleStartTime("18:00");
-    setScheduleEndTime("19:00");
-    setScheduleTimezone("Canada/Toronto");
-    setScheduleIsActive(true);
-  };
-
-  const submitSchedule = async (event: FormEvent) => {
-    event.preventDefault();
-    setSchedulesMessage(null);
-    if (!session) {
-      setSchedulesMessage("Sign in as admin to manage schedules.");
-      return;
-    }
-
-    const payload = {
-      class_type: scheduleClassType,
-      instructor_id: scheduleInstructorId || null,
-      day_of_week: Number.parseInt(scheduleDayOfWeek, 10),
-      start_time: scheduleStartTime,
-      end_time: scheduleEndTime,
-      timezone: scheduleTimezone,
-      is_active: scheduleIsActive
-    };
-
-    try {
-      if (
-        scheduleInstructorId &&
-        !isInstructorQualified(scheduleInstructorId, scheduleClassType)
-      ) {
-        setSchedulesMessage("Selected instructor is not qualified for this class.");
-        return;
-      }
-      if (editingScheduleId) {
-        const { error } = await supabase
-          .from("class_schedules")
-          .update(payload)
-          .eq("id", editingScheduleId);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.from("class_schedules").insert(payload);
-        if (error) throw error;
-      }
-      resetScheduleForm();
-      await loadSchedules();
-    } catch (error: any) {
-      setSchedulesMessage(error?.message ?? "Failed to save schedule");
-    }
-  };
-
-  const deleteSchedule = async (scheduleId: string) => {
-    if (!session) return;
-    const confirmed = window.confirm("Delete this schedule?");
-    if (!confirmed) return;
-    setSchedulesMessage(null);
-    try {
-      const { error } = await supabase
-        .from("class_schedules")
-        .delete()
-        .eq("id", scheduleId);
-      if (error) throw error;
-      await loadSchedules();
-    } catch (error: any) {
-      setSchedulesMessage(error?.message ?? "Failed to delete schedule");
     }
   };
 
@@ -1061,10 +1070,12 @@ export function App() {
   const filteredStudents = students.filter((student) => {
     const query = studentQuery.trim().toLowerCase();
     if (!query) return true;
-    const fullName = [student.first_name, student.last_name].filter(Boolean).join(" ");
+    const studentDisplayName = [student.first_name, student.last_name]
+      .filter(Boolean)
+      .join(" ");
     return (
       String(student.student_number).includes(query) ||
-      fullName.toLowerCase().includes(query) ||
+      studentDisplayName.toLowerCase().includes(query) ||
       (student.email ?? "").toLowerCase().includes(query)
     );
   });
@@ -1078,10 +1089,6 @@ export function App() {
       (item) => item.instructor_id === instructorId && item.class_type === classType
     );
   };
-
-  const qualifiedInstructors = instructors.filter((instructor) =>
-    isInstructorQualified(instructor.id, scheduleClassType)
-  );
 
   return (
     <div className="app">
@@ -1129,7 +1136,7 @@ export function App() {
                 type="password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
-                placeholder="••••••••"
+                placeholder="********"
                 required
               />
             </label>
@@ -1155,12 +1162,22 @@ export function App() {
             </p>
             <form className="form" onSubmit={createAdminUser}>
               <label className="field">
-                <span>Full Name</span>
+                <span>First Name</span>
                 <input
                   className="input"
-                  value={adminCreateName}
-                  onChange={(event) => setAdminCreateName(event.target.value)}
-                  placeholder="Admin Name"
+                  value={adminCreateFirstName}
+                  onChange={(event) => setAdminCreateFirstName(event.target.value)}
+                  placeholder="Admin first name"
+                  required
+                />
+              </label>
+              <label className="field">
+                <span>Last Name</span>
+                <input
+                  className="input"
+                  value={adminCreateLastName}
+                  onChange={(event) => setAdminCreateLastName(event.target.value)}
+                  placeholder="Admin last name"
                   required
                 />
               </label>
@@ -1204,14 +1221,19 @@ export function App() {
             {checkinResponse ? (
               <div className="results">
                 <p className="muted">
-                  Next class: {checkinResponse.schedule.classType} •{" "}
+                  Next class: {checkinResponse.schedule.classType} -{" "}
                   {checkinResponse.schedule.startTime}
                 </p>
                 <ul>
                   {checkinResponse.results.map((result) => (
                     <li key={result.student.studentNumber}>
-                      <strong>{result.student.fullName}</strong> (
-                      {result.student.studentNumber}) —{" "}
+                      <strong>
+                        {[result.student.firstName, result.student.lastName]
+                          .filter(Boolean)
+                          .join(" ") || "Student"}
+                      </strong>{" "}
+                      (
+                      {result.student.studentNumber}) -{" "}
                       {result.blocked ? result.reason ?? "Blocked" : "Checked in"}
                     </li>
                   ))}
@@ -1223,7 +1245,7 @@ export function App() {
           <section className="panel">
             <h2>Classes</h2>
             <p className="muted">
-              Weekly schedule (9am–9pm). Click edit to unlock, then drag a class into a
+              Weekly schedule (9am-9pm). Click edit to unlock, then drag a class into a
               timeslot.
             </p>
             <div className="form-actions">
@@ -1343,7 +1365,7 @@ export function App() {
                             ) : null}
                           </div>
                         ) : (
-                          "—"
+                          "-"
                         )}
                         </div>
                       );
@@ -1481,41 +1503,11 @@ export function App() {
                 ))}
               </select>
             </label>
-            <label className="field">
-              <span>Guardian First Name</span>
-              <input
-                className="input"
-                value={studentGuardianFirstName}
-                onChange={(event) => setStudentGuardianFirstName(event.target.value)}
-                placeholder="Parent first name"
-                disabled={!session}
-              />
-            </label>
-            <label className="field">
-              <span>Guardian Last Name</span>
-              <input
-                className="input"
-                value={studentGuardianLastName}
-                onChange={(event) => setStudentGuardianLastName(event.target.value)}
-                placeholder="Parent last name"
-                disabled={!session}
-              />
-            </label>
-            <label className="field">
-              <span>Guardian Email</span>
-              <input
-                className="input"
-                value={studentGuardianEmail}
-                onChange={(event) => setStudentGuardianEmail(event.target.value)}
-                placeholder="parent@example.com"
-                disabled={!session}
-              />
-            </label>
             <div className="field" style={{ width: "100%" }}>
-              <span className="muted">Additional Guardians</span>
+              <span className="muted">Guardians</span>
               {!editingStudentId ? (
                 <p className="muted">
-                  These will be saved once the student is created.
+                  Add one or more guardians before saving the student.
                 </p>
               ) : null}
               <div className="form">
@@ -1597,7 +1589,7 @@ export function App() {
                     </table>
                   </div>
                 ) : (
-                  <p className="muted">No extra guardians added yet.</p>
+                  <p className="muted">No guardians added yet.</p>
                 )
               ) : pendingGuardians.length ? (
                 <div className="results">
@@ -1639,7 +1631,7 @@ export function App() {
                   </table>
                 </div>
               ) : (
-                <p className="muted">No extra guardians added yet.</p>
+                <p className="muted">No guardians added yet.</p>
               )}
             </div>
             <div className="form-actions">
@@ -1684,15 +1676,28 @@ export function App() {
                       <td>{student.membership_type}</td>
                       <td>{student.membership_standing}</td>
                       <td>
-                        {[student.guardian_first_name, student.guardian_last_name]
-                          .filter(Boolean)
-                          .join(" ") || "-"}
+                        {(() => {
+                          const guardians = allGuardianRows.filter(
+                            (guardian) => guardian.student_id === student.id
+                          );
+                          const firstGuardian = guardians[0];
+                          const guardianLabel = firstGuardian
+                            ? [
+                                firstGuardian.guardian_first_name,
+                                firstGuardian.guardian_last_name
+                              ]
+                                .filter(Boolean)
+                                .join(" ")
+                            : "";
+                          return guardianLabel || "-";
+                        })()}
                       </td>
                       <td>
                         {(() => {
-                          const extraGuardian = allGuardianRows.find(
+                          const guardians = allGuardianRows.filter(
                             (guardian) => guardian.student_id === student.id
                           );
+                          const extraGuardian = guardians[1];
                           const guardianLabel = extraGuardian
                             ? [
                                 extraGuardian.guardian_first_name,
@@ -1907,16 +1912,20 @@ export function App() {
                   </thead>
                   <tbody>
                     {attendanceRows.map((row) => {
-                      const studentName = row.students
-                        ? [row.students.first_name, row.students.last_name]
-                            .filter(Boolean)
-                            .join(" ")
+                      const student = Array.isArray(row.students)
+                        ? row.students[0]
+                        : row.students;
+                      const schedule = Array.isArray(row.class_schedules)
+                        ? row.class_schedules[0]
+                        : row.class_schedules;
+                      const studentDisplayName = student
+                        ? [student.first_name, student.last_name].filter(Boolean).join(" ")
                         : "";
-                      const studentLabel = row.students
-                        ? `${studentName || "Student"} (#${row.students.student_number})`
+                      const studentLabel = student
+                        ? `${studentDisplayName || "Student"} (#${student.student_number})`
                         : "Unknown";
-                      const classLabel = row.class_schedules
-                        ? `${dayOptions.find((d) => d.value === row.class_schedules?.day_of_week)?.label ?? ""} ${row.class_schedules.start_time} · ${row.class_schedules.class_type}`
+                      const classLabel = schedule
+                        ? `${dayOptions.find((d) => d.value === schedule.day_of_week)?.label ?? ""} ${schedule.start_time} - ${schedule.class_type}`
                         : "N/A";
                       return (
                         <tr key={row.id}>

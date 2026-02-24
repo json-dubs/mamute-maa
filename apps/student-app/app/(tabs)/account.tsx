@@ -1,447 +1,258 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Pressable, TextInput } from "react-native";
+import { Pressable, TextInput } from "react-native";
 import { Screen, Card, Text, uiColors } from "@mamute/ui";
 import { HeroHeader } from "../../components/HeroHeader";
 import {
   fetchLinkedStudents,
   getSupabaseClient,
   registerMobileUser,
-  verifyGuardianLink,
-  verifyStudentLink
+  verifyMobileEmail,
+  verifyMobileStudentNumbers
 } from "@mamute/api";
+
+type LinkStep = "email" | "students";
+
+function formatAccountError(error: any, fallback: string) {
+  const raw =
+    typeof error?.message === "string" && error.message.trim()
+      ? error.message
+      : fallback;
+
+  if (raw.includes("EMAIL_NOT_FOUND")) {
+    return "Email was not found in student or guardian records.";
+  }
+  if (raw.includes("STUDENT_MISMATCH")) {
+    return "Student numbers do not match this email.";
+  }
+  if (raw.includes("MISSING_FIELDS")) {
+    return "Please complete all required fields.";
+  }
+  if (raw.includes("UNAUTHORIZED")) {
+    return "Session missing. Please try linking again.";
+  }
+  if (raw.includes("Invalid JWT")) {
+    return "Function JWT verification rejected the session token. Redeploy latest edge functions and restart Expo.";
+  }
+  if (raw.includes("ANON_SESSION_FAILED")) {
+    return "Could not create a device session. Try again.";
+  }
+  if (raw.toLowerCase().includes("anonymous") && raw.toLowerCase().includes("disabled")) {
+    return "Anonymous sign-in is disabled in Supabase Auth settings.";
+  }
+  if (raw.includes("SERVICE_ROLE_KEY") || raw.includes("SUPABASE_URL")) {
+    return "Server configuration is missing for this function. Contact admin.";
+  }
+  return raw;
+}
 
 export default function AccountScreen() {
   const supabase = useMemo(() => getSupabaseClient(), []);
-  const [sessionEmail, setSessionEmail] = useState<string | null>(null);
+  const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [studentLastName, setStudentLastName] = useState("");
-  const [studentNumber, setStudentNumber] = useState("");
-  const [guardianEmail, setGuardianEmail] = useState("");
-  const [children, setChildren] = useState<Array<{ lastName: string; studentNumber: string }>>([
-    { lastName: "", studentNumber: "" }
-  ]);
-  const [role, setRole] = useState<"student" | "guardian">("student");
-  const [mode, setMode] = useState<"choice" | "register" | "signin">("choice");
-  const [step, setStep] = useState<"details" | "confirm" | "password">("details");
-  const [verifiedStudent, setVerifiedStudent] = useState<{
-    firstName?: string | null;
-    lastName?: string | null;
-    fullName: string;
-    email: string | null;
-    studentNumber: number;
-  } | null>(null);
-  const [verifiedGuardian, setVerifiedGuardian] = useState<{
-    guardianName: string;
-    students: Array<{ fullName: string; studentNumber: number }>;
-  } | null>(null);
+  const [step, setStep] = useState<LinkStep>("email");
+  const [studentNumbers, setStudentNumbers] = useState<string[]>([""]);
+  const [availableStudents, setAvailableStudents] = useState<
+    Array<{ id: string; studentNumber: number; firstName?: string | null; lastName?: string | null }>
+  >([]);
+
   const [linkedStudents, setLinkedStudents] = useState<string[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      setSessionEmail(data.session?.user.email ?? null);
+      setSessionUserId(data.session?.user.id ?? null);
     });
     const { data: subscription } = supabase.auth.onAuthStateChange((_event, next) => {
-      setSessionEmail(next?.user.email ?? null);
+      setSessionUserId(next?.user.id ?? null);
     });
     return () => subscription.subscription.unsubscribe();
   }, [supabase]);
 
   useEffect(() => {
-    if (!sessionEmail) return;
+    if (!sessionUserId) {
+      setLinkedStudents([]);
+      return;
+    }
     fetchLinkedStudents()
-      .then((rows) => setLinkedStudents(rows.map((row) => row.fullName)))
+      .then((rows) =>
+        setLinkedStudents(rows.map((row) => [row.firstName, row.lastName].filter(Boolean).join(" ")))
+      )
       .catch(() => setLinkedStudents([]));
-  }, [sessionEmail]);
+  }, [sessionUserId]);
 
-  const signIn = async () => {
-    setLoading(true);
-    setMessage(null);
-    try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password
-      });
-      if (error) throw error;
-      setMessage("Signed in.");
-    } catch (error: any) {
-      setMessage(error?.message ?? "Sign in failed.");
-    } finally {
-      setLoading(false);
+  const ensureSession = async () => {
+    const { data: existing } = await supabase.auth.getSession();
+    if (existing.session) {
+      const { error: userError } = await supabase.auth.getUser();
+      if (!userError) return existing.session;
+      await supabase.auth.signOut();
     }
+
+    const { data, error } = await supabase.auth.signInAnonymously();
+    if (error) throw error;
+    if (!data.session) throw new Error("ANON_SESSION_FAILED");
+    return data.session;
   };
 
-  const startRegistration = () => {
-    setMode("register");
-    setStep("details");
-    setMessage(null);
-    setVerifiedStudent(null);
-    setVerifiedGuardian(null);
-  };
-
-  const verifyStudent = async () => {
-    const parsedNumber = Number.parseInt(studentNumber, 10);
-    if (!Number.isFinite(parsedNumber) || !studentLastName.trim()) {
-      setMessage("Enter last name and student number.");
+  const submitEmail = async () => {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) {
+      setMessage("Enter your email.");
       return;
     }
     setLoading(true);
     setMessage(null);
     try {
-      const result = await verifyStudentLink({
-        lastName: studentLastName.trim(),
-        studentNumber: parsedNumber
-      });
-      if (!result.student.email) {
-        setMessage("Student email is missing. Ask admin to add it.");
-        return;
-      }
-        setVerifiedStudent({
-          fullName: result.student.fullName,
-          email: result.student.email,
-          studentNumber: result.student.studentNumber
-        });
-      setStep("confirm");
+      const result = await verifyMobileEmail({ email: normalizedEmail });
+      setAvailableStudents(result.students);
+      setStep("students");
     } catch (error: any) {
-      setMessage(error?.message ?? "Could not verify student.");
+      setMessage(formatAccountError(error, "Email was not found."));
     } finally {
       setLoading(false);
     }
   };
 
-  const verifyGuardian = async () => {
-    const parsedChildren = children
-      .map((child) => ({
-        lastName: child.lastName.trim(),
-        studentNumber: Number.parseInt(child.studentNumber, 10)
-      }))
-      .filter(
-        (child) => child.lastName.length > 0 && Number.isFinite(child.studentNumber)
-      );
-    if (!guardianEmail.trim() || !parsedChildren.length) {
-      setMessage("Enter guardian email and at least one child.");
+  const linkAccount = async () => {
+    const parsedNumbers = [
+      ...new Set(
+        studentNumbers
+          .map((value) => Number.parseInt(value, 10))
+          .filter((value) => Number.isFinite(value))
+      )
+    ];
+    if (!parsedNumbers.length) {
+      setMessage("Enter at least one student number.");
       return;
     }
+
     setLoading(true);
     setMessage(null);
     try {
-      const result = await verifyGuardianLink({
-        guardianEmail: guardianEmail.trim(),
-        children: parsedChildren
+      const normalizedEmail = email.trim().toLowerCase();
+      const verifyResult = await verifyMobileStudentNumbers({
+        email: normalizedEmail,
+        studentNumbers: parsedNumbers
       });
-      setVerifiedGuardian({
-        guardianName: result.guardianName,
-        students: result.students.map((student) => ({
-          fullName: student.fullName,
-          studentNumber: student.studentNumber
-        }))
-      });
-      setStep("confirm");
+
+      const session = await ensureSession();
+      await registerMobileUser({
+        email: normalizedEmail,
+        studentNumbers: verifyResult.students.map((student) => student.studentNumber)
+      }, session.access_token);
+
+      const linked = await fetchLinkedStudents();
+      setLinkedStudents(linked.map((row) => [row.firstName, row.lastName].filter(Boolean).join(" ")));
+
+      setMessage("App linked on this device.");
+      setStep("email");
+      setStudentNumbers([""]);
+      setAvailableStudents([]);
     } catch (error: any) {
-      setMessage(error?.message ?? "Could not verify guardian.");
+      setMessage(formatAccountError(error, "Could not link app to student records."));
     } finally {
       setLoading(false);
     }
   };
 
-  const registerAccount = async () => {
-    if (!password || password.length < 8) {
-      setMessage("Password must be at least 8 characters.");
-      return;
-    }
-    setLoading(true);
-    setMessage(null);
-    try {
-      if (role === "student" && verifiedStudent) {
-        await registerMobileUser({
-          role,
-          fullName: verifiedStudent.fullName,
-          email: verifiedStudent.email ?? "",
-          studentNumbers: [verifiedStudent.studentNumber],
-          password
-        });
-        const { error } = await supabase.auth.signInWithPassword({
-          email: verifiedStudent.email ?? "",
-          password
-        });
-        if (error) throw error;
-      }
-      if (role === "guardian" && verifiedGuardian) {
-        await registerMobileUser({
-          role,
-          fullName: verifiedGuardian.guardianName,
-          email: guardianEmail.trim(),
-          studentNumbers: verifiedGuardian.students.map(
-            (student) => student.studentNumber
-          ),
-          password
-        });
-        const { error } = await supabase.auth.signInWithPassword({
-          email: guardianEmail.trim(),
-          password
-        });
-        if (error) throw error;
-      }
-      setMessage("Account created. Signed in.");
-      setMode("choice");
-      setStep("details");
-      setStudentLastName("");
-      setStudentNumber("");
-      setGuardianEmail("");
-      setChildren([{ lastName: "", studentNumber: "" }]);
-      setPassword("");
-      setVerifiedStudent(null);
-      setVerifiedGuardian(null);
-    } catch (error: any) {
-      setMessage(error?.message ?? "Sign up failed.");
-      setStep("details");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const addChild = () => {
-    setChildren((prev) => [...prev, { lastName: "", studentNumber: "" }]);
-  };
-
-  const signOut = async () => {
+  const unlinkDevice = async () => {
     await supabase.auth.signOut();
-    setMessage("Signed out.");
+    setMessage("Device unlinked. You can link again anytime.");
+    setStep("email");
+    setStudentNumbers([""]);
+    setAvailableStudents([]);
   };
 
-  const resetPassword = async () => {
-    setLoading(true);
-    setMessage(null);
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim());
-      if (error) throw error;
-      Alert.alert("Reset email sent", "Check your inbox for the reset link.");
-    } catch (error: any) {
-      setMessage(error?.message ?? "Password reset failed.");
-    } finally {
-      setLoading(false);
-    }
+  const addStudentNumber = () => {
+    setStudentNumbers((prev) => [...prev, ""]);
   };
+
+  const updateStudentNumber = (index: number, value: string) => {
+    setStudentNumbers((prev) => prev.map((entry, idx) => (idx === index ? value : entry)));
+  };
+
+  if (sessionUserId && linkedStudents.length) {
+    return (
+      <Screen>
+        <HeroHeader title="Account" />
+        <Card>
+          <Text>App linked on this device.</Text>
+          <Text style={{ color: uiColors.muted, marginTop: 6 }}>
+            Linked students: {linkedStudents.join(", ")}
+          </Text>
+          <Pressable onPress={unlinkDevice} style={[buttonStyle, { marginTop: 12 }]}>
+            <Text style={buttonTextStyle}>Break link on this device</Text>
+          </Pressable>
+          {message ? <Text style={{ color: "#fca5a5", marginTop: 10 }}>{message}</Text> : null}
+        </Card>
+      </Screen>
+    );
+  }
 
   return (
     <Screen>
       <HeroHeader title="Account" />
       <Card>
-        {sessionEmail ? (
+        <Text style={{ marginBottom: 8 }}>
+          Link this app using your email and linked student number(s).
+        </Text>
+
+        <TextInput
+          value={email}
+          onChangeText={setEmail}
+          placeholder="Email"
+          placeholderTextColor={uiColors.muted}
+          autoCapitalize="none"
+          keyboardType="email-address"
+          style={inputStyle}
+        />
+
+        {step === "email" ? (
+          <Pressable onPress={submitEmail} style={buttonStyle} disabled={loading}>
+            <Text style={buttonTextStyle}>{loading ? "Checking email..." : "Continue"}</Text>
+          </Pressable>
+        ) : null}
+
+        {step === "students" ? (
           <>
-            <Text>Signed in as {sessionEmail}</Text>
-            {linkedStudents.length ? (
-              <Text style={{ color: uiColors.muted, marginTop: 6 }}>
-                Linked students: {linkedStudents.join(", ")}
+            <Text style={{ marginTop: 8, marginBottom: 8 }}>
+              Enter student number(s) linked to this email.
+            </Text>
+            {availableStudents.length ? (
+              <Text style={{ color: uiColors.muted, marginBottom: 8 }}>
+                Found in records: {availableStudents.map((student) => student.studentNumber).join(", ")}
               </Text>
             ) : null}
-            <Pressable onPress={signOut} style={buttonStyle}>
-              <Text style={buttonTextStyle}>Sign out</Text>
+
+            {studentNumbers.map((value, index) => (
+              <TextInput
+                key={`student-number-${index}`}
+                value={value}
+                onChangeText={(next) => updateStudentNumber(index, next)}
+                placeholder={`Student number ${index + 1}`}
+                placeholderTextColor={uiColors.muted}
+                keyboardType="number-pad"
+                style={inputStyle}
+              />
+            ))}
+
+            <Pressable onPress={addStudentNumber} style={buttonStyle}>
+              <Text style={buttonTextStyle}>Add another student number</Text>
+            </Pressable>
+
+            <Pressable onPress={linkAccount} style={[buttonStyle, { marginTop: 10 }]} disabled={loading}>
+              <Text style={buttonTextStyle}>{loading ? "Linking..." : "Link app"}</Text>
+            </Pressable>
+
+            <Pressable onPress={() => setStep("email")} style={{ marginTop: 10 }}>
+              <Text style={linkStyle}>Back</Text>
             </Pressable>
           </>
-        ) : (
-          <>
-            {mode === "choice" ? (
-              <>
-                <Pressable onPress={startRegistration} style={buttonStyle}>
-                  <Text style={buttonTextStyle}>
-                    Are you a student or guardian? Sign in here
-                  </Text>
-                </Pressable>
-                <Pressable onPress={() => setMode("signin")} style={{ marginTop: 10 }}>
-                  <Text style={linkStyle}>Already have a password? Sign in</Text>
-                </Pressable>
-              </>
-            ) : null}
-            {mode === "signin" ? (
-              <>
-                <TextInput
-                  value={email}
-                  onChangeText={setEmail}
-                  placeholder="Email"
-                  placeholderTextColor={uiColors.muted}
-                  autoCapitalize="none"
-                  keyboardType="email-address"
-                  style={inputStyle}
-                />
-                <TextInput
-                  value={password}
-                  onChangeText={setPassword}
-                  placeholder="Password"
-                  placeholderTextColor={uiColors.muted}
-                  secureTextEntry
-                  style={inputStyle}
-                />
-                <Pressable onPress={signIn} style={buttonStyle} disabled={loading}>
-                  <Text style={buttonTextStyle}>
-                    {loading ? "Signing in..." : "Sign in"}
-                  </Text>
-                </Pressable>
-                <Pressable onPress={resetPassword} disabled={loading}>
-                  <Text style={linkStyle}>Forgot password / invite link?</Text>
-                </Pressable>
-              </>
-            ) : null}
-            {mode === "register" ? (
-              <>
-                <Pressable
-                  onPress={() =>
-                    setRole((prev) => (prev === "student" ? "guardian" : "student"))
-                  }
-                  style={[buttonStyle, { backgroundColor: uiColors.surfaceAlt }]}
-                >
-                  <Text style={[buttonTextStyle, { color: uiColors.text }]}>
-                    I am a {role === "student" ? "student" : "guardian"}
-                  </Text>
-                </Pressable>
-                {step === "details" ? (
-                  <>
-                    {role === "student" ? (
-                      <>
-                        <TextInput
-                          value={studentLastName}
-                          onChangeText={setStudentLastName}
-                          placeholder="Last name"
-                          placeholderTextColor={uiColors.muted}
-                          style={inputStyle}
-                        />
-                        <TextInput
-                          value={studentNumber}
-                          onChangeText={setStudentNumber}
-                          placeholder="Student number"
-                          placeholderTextColor={uiColors.muted}
-                          keyboardType="number-pad"
-                          style={inputStyle}
-                        />
-                        <Pressable
-                          onPress={verifyStudent}
-                          style={[buttonStyle, { marginTop: 10 }]}
-                        >
-                          <Text style={buttonTextStyle}>Find Student</Text>
-                        </Pressable>
-                      </>
-                    ) : (
-                      <>
-                        <TextInput
-                          value={guardianEmail}
-                          onChangeText={setGuardianEmail}
-                          placeholder="Guardian email"
-                          placeholderTextColor={uiColors.muted}
-                          autoCapitalize="none"
-                          keyboardType="email-address"
-                          style={inputStyle}
-                        />
-                        {children.map((child, index) => (
-                          <Card key={`child-${index}`} style={{ marginTop: 8 }}>
-                            <TextInput
-                              value={child.lastName}
-                              onChangeText={(value) =>
-                                setChildren((prev) =>
-                                  prev.map((item, idx) =>
-                                    idx === index ? { ...item, lastName: value } : item
-                                  )
-                                )
-                              }
-                              placeholder={`Child ${index + 1} last name`}
-                              placeholderTextColor={uiColors.muted}
-                              style={inputStyle}
-                            />
-                            <TextInput
-                              value={child.studentNumber}
-                              onChangeText={(value) =>
-                                setChildren((prev) =>
-                                  prev.map((item, idx) =>
-                                    idx === index
-                                      ? { ...item, studentNumber: value }
-                                      : item
-                                  )
-                                )
-                              }
-                              placeholder={`Child ${index + 1} student number`}
-                              placeholderTextColor={uiColors.muted}
-                              keyboardType="number-pad"
-                              style={inputStyle}
-                            />
-                          </Card>
-                        ))}
-                        <Pressable onPress={addChild} style={buttonStyle}>
-                          <Text style={buttonTextStyle}>Add another child</Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={verifyGuardian}
-                          style={[buttonStyle, { marginTop: 10 }]}
-                        >
-                          <Text style={buttonTextStyle}>Verify Guardian</Text>
-                        </Pressable>
-                      </>
-                    )}
-                  </>
-                ) : null}
-                {step === "confirm" ? (
-                  <>
-                    {role === "student" && verifiedStudent ? (
-                      <>
-                        <Text>Is this you?</Text>
-                        <Text style={{ color: uiColors.muted, marginTop: 6 }}>
-                          {verifiedStudent.fullName} (#{verifiedStudent.studentNumber})
-                        </Text>
-                      </>
-                    ) : null}
-                    {role === "guardian" && verifiedGuardian ? (
-                      <>
-                        <Text>Confirm guardian + children</Text>
-                        <Text style={{ color: uiColors.muted, marginTop: 6 }}>
-                          {verifiedGuardian.guardianName}
-                        </Text>
-                        {verifiedGuardian.students.map((student) => (
-                          <Text key={student.studentNumber} style={{ color: uiColors.muted }}>
-                            {student.fullName} (#{student.studentNumber})
-                          </Text>
-                        ))}
-                      </>
-                    ) : null}
-                    <Pressable
-                      onPress={() => setStep("password")}
-                      style={[buttonStyle, { marginTop: 10 }]}
-                    >
-                      <Text style={buttonTextStyle}>Yes, this is correct</Text>
-                    </Pressable>
-                    <Pressable onPress={() => setStep("details")} style={{ marginTop: 10 }}>
-                      <Text style={linkStyle}>No, go back</Text>
-                    </Pressable>
-                  </>
-                ) : null}
-                {step === "password" ? (
-                  <>
-                    <TextInput
-                      value={password}
-                      onChangeText={setPassword}
-                      placeholder="Create password"
-                      placeholderTextColor={uiColors.muted}
-                      secureTextEntry
-                      style={inputStyle}
-                    />
-                    <Pressable
-                      onPress={registerAccount}
-                      style={buttonStyle}
-                      disabled={loading}
-                    >
-                      <Text style={buttonTextStyle}>
-                        {loading ? "Creating..." : "Create account"}
-                      </Text>
-                    </Pressable>
-                    <Pressable onPress={() => setStep("confirm")} style={{ marginTop: 10 }}>
-                      <Text style={linkStyle}>Back</Text>
-                    </Pressable>
-                  </>
-                ) : null}
-              </>
-            ) : null}
-          </>
-        )}
-        {message ? <Text style={{ color: "#fca5a5" }}>{message}</Text> : null}
+        ) : null}
+
+        {message ? <Text style={{ color: "#fca5a5", marginTop: 10 }}>{message}</Text> : null}
       </Card>
     </Screen>
   );

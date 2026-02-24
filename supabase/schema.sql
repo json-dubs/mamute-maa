@@ -14,18 +14,34 @@ create table if not exists gym_settings (
 -- Core roles (admins are auth users; students/instructors are domain records)
 create table if not exists admins (
   user_id uuid primary key references auth.users on delete cascade,
-  full_name text not null,
+  first_name text not null,
+  last_name text not null,
   email text not null,
   created_at timestamptz default now()
 );
 
-create table if not exists parents (
-  user_id uuid primary key references auth.users on delete cascade,
-  first_name text,
-  last_name text,
-  email text not null,
-  created_at timestamptz default now()
-);
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'admins'
+      and column_name = 'full_name'
+  ) then
+    alter table admins add column if not exists first_name text;
+    alter table admins add column if not exists last_name text;
+    update admins
+    set
+      first_name = coalesce(first_name, split_part(full_name, ' ', 1)),
+      last_name = coalesce(
+        nullif(last_name, ''),
+        nullif(trim(substr(full_name, length(split_part(full_name, ' ', 1)) + 1)), ''),
+        'User'
+      )
+    where full_name is not null and (first_name is null or last_name is null);
+  end if;
+end $$;
 
 -- Students
 create table if not exists students (
@@ -49,9 +65,6 @@ create table if not exists students (
   membership_standing text not null check (
     membership_standing in ('active','inactive','overdue')
   ),
-  guardian_first_name text,
-  guardian_last_name text,
-  guardian_email text,
   created_by uuid references admins(user_id),
   created_at timestamptz default now()
 );
@@ -66,7 +79,44 @@ create table if not exists student_guardians (
   unique (student_id, guardian_email)
 );
 
--- Link auth users (students/parents) to student records
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'students'
+      and column_name = 'guardian_email'
+  ) then
+    execute $sql$
+      insert into student_guardians (
+        student_id,
+        guardian_first_name,
+        guardian_last_name,
+        guardian_email
+      )
+      select
+        id,
+        nullif(trim(guardian_first_name), ''),
+        nullif(trim(guardian_last_name), ''),
+        lower(trim(guardian_email))
+      from students
+      where guardian_email is not null and trim(guardian_email) <> ''
+      on conflict (student_id, guardian_email) do update
+      set
+        guardian_first_name = coalesce(excluded.guardian_first_name, student_guardians.guardian_first_name),
+        guardian_last_name = coalesce(excluded.guardian_last_name, student_guardians.guardian_last_name)
+    $sql$;
+
+    alter table students drop column if exists guardian_first_name;
+    alter table students drop column if exists guardian_last_name;
+    alter table students drop column if exists guardian_email;
+  end if;
+end $$;
+
+drop table if exists parents;
+
+-- Link auth users (students/guardians) to student records
 create table if not exists student_access (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references auth.users on delete cascade,
@@ -132,7 +182,6 @@ create table if not exists attendance (
 
 -- RLS
 alter table admins enable row level security;
-alter table parents enable row level security;
 alter table students enable row level security;
 alter table student_access enable row level security;
 alter table instructors enable row level security;

@@ -3,16 +3,24 @@ import { createClient } from "npm:@supabase/supabase-js";
 
 interface LinkRequest {
   studentNumber?: number;
-  studentName?: string;
-  students?: { studentNumber: number; studentName: string }[];
-  parentName?: string;
+  studentFirstName?: string;
+  studentLastName?: string;
+  students?: {
+    studentNumber: number;
+    studentFirstName: string;
+    studentLastName: string;
+  }[];
+  guardianFirstName?: string;
+  guardianLastName?: string;
 }
 
 interface StudentRow {
   id: string;
   student_number: number;
-  full_name: string;
+  first_name: string | null;
+  last_name: string | null;
   membership_standing: "active" | "inactive" | "overdue";
+  barcode_value: string | null;
 }
 
 Deno.serve(async (req) => {
@@ -37,6 +45,11 @@ Deno.serve(async (req) => {
   }
 
   const user = authData.user;
+  const guardianEmail = user.email?.trim().toLowerCase() ?? "";
+  if (!guardianEmail) {
+    return Response.json({ error: "MISSING_USER_EMAIL" }, { status: 400 });
+  }
+
   const payload = (await req.json()) as LinkRequest;
   const targets = normalizeTargets(payload);
   if (!targets.length) {
@@ -44,12 +57,13 @@ Deno.serve(async (req) => {
   }
 
   const supabase = createServiceClient();
-  await upsertParentProfile(supabase, user.id, payload.parentName, user.email);
 
   const numbers = targets.map((student) => student.studentNumber);
   const { data: students, error: studentError } = await supabase
     .from("students")
-    .select("id, student_number, full_name, membership_standing")
+    .select(
+      "id, student_number, first_name, last_name, membership_standing, barcode_value"
+    )
     .in("student_number", numbers);
   if (studentError) {
     return Response.json({ error: studentError.message }, { status: 400 });
@@ -63,7 +77,15 @@ Deno.serve(async (req) => {
 
   for (const target of targets) {
     const match = matches.get(target.studentNumber);
-    if (!match || !namesMatch(match.full_name, target.studentName)) {
+    if (
+      !match ||
+      !namesMatch(
+        match.first_name,
+        match.last_name,
+        target.studentFirstName,
+        target.studentLastName
+      )
+    ) {
       missing.push(target);
       continue;
     }
@@ -80,11 +102,32 @@ Deno.serve(async (req) => {
       return Response.json({ error: linkError.message }, { status: 400 });
     }
 
+    const guardianPayload: Record<string, string> = {
+      student_id: match.id,
+      guardian_email: guardianEmail
+    };
+    const guardianFirstName = payload.guardianFirstName?.trim();
+    const guardianLastName = payload.guardianLastName?.trim();
+    if (guardianFirstName) {
+      guardianPayload.guardian_first_name = guardianFirstName;
+    }
+    if (guardianLastName) {
+      guardianPayload.guardian_last_name = guardianLastName;
+    }
+    const { error: guardianError } = await supabase
+      .from("student_guardians")
+      .upsert(guardianPayload, { onConflict: "student_id,guardian_email" });
+    if (guardianError) {
+      return Response.json({ error: guardianError.message }, { status: 400 });
+    }
+
     linked.push({
       studentId: match.id,
       studentNumber: match.student_number,
-      fullName: match.full_name,
-      membershipStanding: match.membership_standing
+      firstName: match.first_name,
+      lastName: match.last_name,
+      membershipStanding: match.membership_standing,
+      barcodeValue: match.barcode_value
     });
   }
 
@@ -97,31 +140,33 @@ Deno.serve(async (req) => {
 
 function normalizeTargets(payload: LinkRequest) {
   if (payload.students?.length) return payload.students;
-  if (!payload.studentNumber || !payload.studentName) return [];
-  return [{ studentNumber: payload.studentNumber, studentName: payload.studentName }];
-}
-
-function namesMatch(expected: string, provided: string) {
-  return expected.trim().toLowerCase() === provided.trim().toLowerCase();
-}
-
-async function upsertParentProfile(
-  client: any,
-  userId: string,
-  parentName?: string,
-  email?: string | null
-) {
-  const resolvedName = parentName?.trim() || "Parent";
-  const resolvedEmail = email ?? "";
-  const { error } = await client.from("parents").upsert(
+  if (
+    !payload.studentNumber ||
+    !payload.studentFirstName ||
+    !payload.studentLastName
+  ) {
+    return [];
+  }
+  return [
     {
-      user_id: userId,
-      full_name: resolvedName,
-      email: resolvedEmail
-    },
-    { onConflict: "user_id" }
-  );
-  if (error) throw error;
+      studentNumber: payload.studentNumber,
+      studentFirstName: payload.studentFirstName,
+      studentLastName: payload.studentLastName
+    }
+  ];
+}
+
+function namesMatch(
+  expectedFirst: string | null,
+  expectedLast: string | null,
+  providedFirst: string,
+  providedLast: string
+) {
+  const normalizedExpected =
+    `${expectedFirst ?? ""} ${expectedLast ?? ""}`.trim().toLowerCase();
+  const normalizedProvided =
+    `${providedFirst ?? ""} ${providedLast ?? ""}`.trim().toLowerCase();
+  return normalizedExpected === normalizedProvided;
 }
 
 function createServiceClient() {

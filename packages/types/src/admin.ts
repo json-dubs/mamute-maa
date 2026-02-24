@@ -30,9 +30,6 @@ export interface StudentRecord {
   barcodeValue?: string | null;
   membershipType: MembershipType;
   membershipStanding: MembershipStanding;
-  guardianFirstName?: string | null;
-  guardianLastName?: string | null;
-  guardianEmail?: string | null;
 }
 
 export interface InstructorRecord {
@@ -81,7 +78,7 @@ export interface CheckInRequest {
 export interface CheckInResult {
   student: Pick<
     StudentRecord,
-    "id" | "studentNumber" | "fullName" | "membershipStanding"
+    "id" | "studentNumber" | "firstName" | "lastName" | "membershipStanding"
   >;
   attendance?: AttendanceRecord | null;
   blocked: boolean;
@@ -100,15 +97,10 @@ export interface StudentAccess {
   role: "student" | "parent";
 }
 
-export interface ParentProfile {
-  userId: string;
-  fullName: string;
-  email: string;
-}
-
 export interface AdminProfile {
   userId: string;
-  fullName: string;
+  firstName: string;
+  lastName: string;
   email: string;
 }
 
@@ -123,9 +115,15 @@ export interface LinkedStudentSummary {
 
 export interface LinkStudentAccessRequest {
   studentNumber?: number;
-  studentName?: string;
-  students?: { studentNumber: number; studentName: string }[];
-  parentName?: string;
+  studentFirstName?: string;
+  studentLastName?: string;
+  students?: {
+    studentNumber: number;
+    studentFirstName: string;
+    studentLastName: string;
+  }[];
+  guardianFirstName?: string;
+  guardianLastName?: string;
 }
 
 export interface LinkStudentAccessResponse {
@@ -133,15 +131,46 @@ export interface LinkStudentAccessResponse {
 }
 
 export interface RegisterMobileUserRequest {
-  role: "student" | "guardian";
-  fullName: string;
   email: string;
   studentNumbers: number[];
-  password: string;
 }
 
 export interface RegisterMobileUserResponse {
   ok: true;
+  role: "student" | "parent";
+  linked: LinkedStudentSummary[];
+}
+
+export interface VerifyMobileEmailRequest {
+  email: string;
+}
+
+export interface VerifyMobileEmailResponse {
+  found: true;
+  students: Array<{
+    id: string;
+    studentNumber: number;
+    firstName?: string | null;
+    lastName?: string | null;
+  }>;
+}
+
+export interface VerifyMobileStudentNumbersRequest {
+  email: string;
+  studentNumbers: number[];
+}
+
+export interface VerifyMobileStudentNumbersResponse {
+  ok: true;
+  role: "student" | "parent";
+  students: Array<{
+    id: string;
+    studentNumber: number;
+    firstName?: string | null;
+    lastName?: string | null;
+  }>;
+  guardianFirstName?: string | null;
+  guardianLastName?: string | null;
 }
 
 export interface VerifyStudentLinkRequest {
@@ -153,7 +182,8 @@ export interface VerifyStudentLinkResponse {
   student: {
     id: string;
     studentNumber: number;
-    fullName: string;
+    firstName?: string | null;
+    lastName?: string | null;
     email: string | null;
   };
 }
@@ -169,10 +199,12 @@ export interface VerifyGuardianLinkRequest {
 }
 
 export interface VerifyGuardianLinkResponse {
-  guardianName: string;
+  guardianFirstName?: string | null;
+  guardianLastName?: string | null;
   students: Array<{
     id: string;
     studentNumber: number;
-    fullName: string;
+    firstName?: string | null;
+    lastName?: string | null;
   }>;
 }

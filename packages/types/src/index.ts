@@ -5,7 +5,8 @@ export type MembershipStatus = "good" | "delinquent" | "suspended";
 export interface Profile {
   id: string;
   role: Role;
-  fullName: string;
+  firstName: string;
+  lastName: string;
   email: string;
   phone?: string;
   guardianFor?: string | null;

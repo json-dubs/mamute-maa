@@ -265,7 +265,8 @@ function normalizeStudent(student: StudentRow) {
   return {
     id: student.id,
     studentNumber: student.student_number,
-    fullName: [student.first_name, student.last_name].filter(Boolean).join(" "),
+    firstName: student.first_name ?? null,
+    lastName: student.last_name ?? null,
     membershipStanding: student.membership_standing
   };
 }

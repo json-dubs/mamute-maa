@@ -52,8 +52,8 @@ supabase functions deploy linkStudentAccess
 supabase functions deploy createAdminUser
 supabase functions deploy makeMeAdmin
 supabase functions deploy registerMobileUser
-supabase functions deploy verifyStudentLink
-supabase functions deploy verifyGuardianLink
+supabase functions deploy verifyMobileEmail
+supabase functions deploy verifyMobileStudents
 ```
 
 ## Initial admin bootstrap (one-time)
@@ -67,3 +67,4 @@ calls after the first admin exists.
 - Student barcode format: `MMAA-<student_number>`
 - Mobile app opens to the barcode screen by default
 - Guardian check-in supports multiple children in the Family tab
+- Mobile account linking flow: email -> student number(s) -> link app (no password step)

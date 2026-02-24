@@ -2,7 +2,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js";
 
 interface MakeMeAdminRequest {
-  fullName?: string;
+  firstName?: string;
+  lastName?: string;
 }
 
 Deno.serve(async (req) => {
@@ -45,15 +46,18 @@ Deno.serve(async (req) => {
   }
 
   const payload = (await req.json()) as MakeMeAdminRequest;
-  const fullName =
-    payload.fullName?.trim() ||
-    authData.user.user_metadata?.full_name ||
-    authData.user.email ||
-    "Admin";
+  const fallback = splitName(
+    (authData.user.user_metadata?.first_name as string | undefined) ??
+      authData.user.email ??
+      "Admin"
+  );
+  const firstName = payload.firstName?.trim() || fallback.firstName || "Admin";
+  const lastName = payload.lastName?.trim() || fallback.lastName || "User";
 
   const { error: insertError } = await supabase.from("admins").insert({
     user_id: authData.user.id,
-    full_name: fullName,
+    first_name: firstName,
+    last_name: lastName,
     email: authData.user.email ?? ""
   });
 
@@ -63,3 +67,14 @@ Deno.serve(async (req) => {
 
   return Response.json({ ok: true });
 });
+
+function splitName(input: string) {
+  const trimmed = input.trim();
+  if (!trimmed) return { firstName: "", lastName: "" };
+  const parts = trimmed.split(/\s+/);
+  if (parts.length === 1) return { firstName: parts[0], lastName: "" };
+  return {
+    firstName: parts.slice(0, -1).join(" "),
+    lastName: parts.slice(-1).join(" ")
+  };
+}
