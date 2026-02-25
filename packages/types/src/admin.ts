@@ -25,7 +25,7 @@ export interface StudentRecord {
   studentNumber: number;
   firstName?: string | null;
   lastName?: string | null;
-  age?: number | null;
+  birthDate?: string | null;
   email?: string | null;
   barcodeValue?: string | null;
   membershipType: MembershipType;
@@ -72,6 +72,7 @@ export interface AttendanceRecord {
 export interface CheckInRequest {
   barcode?: string;
   studentNumbers?: number[];
+  scheduleId?: string;
   deviceId?: string;
   source: "frontdesk" | "mobile";
   locationVerified?: boolean;
@@ -112,9 +113,40 @@ export interface LinkedStudentSummary {
   firstName?: string | null;
   lastName?: string | null;
   guardianNames?: string[];
+  badges?: StudentBadgeSummary[];
   membershipType?: MembershipType;
   membershipStanding: MembershipStanding;
   barcodeValue?: string | null;
+}
+
+export type BadgeVisibility = "public" | "private";
+export type BadgeAssignedSource = "auto" | "manual";
+
+export interface BadgeRecord {
+  id: string;
+  title: string;
+  description?: string | null;
+  imagePath?: string | null;
+  imageName?: string | null;
+  imageMimeType?: string | null;
+  imageUrl?: string | null;
+  milestoneCount?: number | null;
+  createdAt: string;
+}
+
+export interface StudentBadgeSummary {
+  id: string;
+  badgeId: string;
+  title: string;
+  description?: string | null;
+  milestoneCount?: number | null;
+  imagePath?: string | null;
+  imageName?: string | null;
+  imageMimeType?: string | null;
+  imageUrl?: string | null;
+  visibility: BadgeVisibility;
+  assignedSource: BadgeAssignedSource;
+  assignedAt: string;
 }
 
 export interface LinkStudentAccessRequest {
@@ -211,4 +243,31 @@ export interface VerifyGuardianLinkResponse {
     firstName?: string | null;
     lastName?: string | null;
   }>;
+}
+
+export interface MamuteNewsPost {
+  id: string;
+  title: string;
+  description: string;
+  postType?: "general" | "birthday" | "badge" | "payment";
+  attachmentPath?: string | null;
+  attachmentName?: string | null;
+  attachmentMimeType?: string | null;
+  visibility?: BadgeVisibility;
+  studentId?: string | null;
+  attachmentUrl?: string | null;
+  expiresAt?: string | null;
+  createdAt: string;
+}
+
+export interface CreateMamuteNewsPostRequest {
+  title: string;
+  description: string;
+  postType?: "general" | "birthday" | "badge" | "payment";
+  visibility?: BadgeVisibility;
+  studentId?: string | null;
+  expiresAt?: string | null;
+  attachmentPath?: string | null;
+  attachmentName?: string | null;
+  attachmentMimeType?: string | null;
 }

@@ -49,7 +49,7 @@ create table if not exists students (
   student_number int unique not null,
   first_name text,
   last_name text,
-  age int,
+  birth_date date,
   email text,
   barcode_value text generated always as ('MMAA-' || student_number::text) stored unique,
   membership_type text not null check (
@@ -68,6 +68,25 @@ create table if not exists students (
   created_by uuid references admins(user_id),
   created_at timestamptz default now()
 );
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'students'
+      and column_name = 'age'
+  ) then
+    alter table students add column if not exists birth_date date;
+
+    update students
+    set birth_date = (current_date - make_interval(years => age))::date
+    where birth_date is null and age is not null;
+
+    alter table students drop column if exists age;
+  end if;
+end $$;
 
 create table if not exists student_guardians (
   id uuid primary key default gen_random_uuid(),
@@ -167,6 +186,450 @@ create table if not exists class_schedules (
   created_at timestamptz default now()
 );
 
+-- News posts for admin announcements/events
+create table if not exists mamute_news (
+  id uuid primary key default gen_random_uuid(),
+  title text not null,
+  description text not null,
+  attachment_path text,
+  attachment_name text,
+  attachment_mime_type text,
+  expires_at timestamptz,
+  created_by uuid references admins(user_id),
+  created_at timestamptz default now()
+);
+
+alter table mamute_news
+  add column if not exists visibility text not null default 'public'
+    check (visibility in ('public', 'private'));
+alter table mamute_news
+  add column if not exists student_id uuid references students(id) on delete cascade;
+alter table mamute_news
+  add column if not exists post_type text not null default 'general'
+    check (post_type in ('general', 'birthday', 'badge', 'payment'));
+update mamute_news set visibility = 'public' where visibility is null;
+
+-- Badge catalog and student badge assignments
+create table if not exists badges (
+  id uuid primary key default gen_random_uuid(),
+  title text not null,
+  description text,
+  image_path text,
+  image_name text,
+  image_mime_type text,
+  milestone_count int unique,
+  created_by uuid references admins(user_id),
+  created_at timestamptz default now()
+);
+
+create table if not exists student_badges (
+  id uuid primary key default gen_random_uuid(),
+  student_id uuid not null references students(id) on delete cascade,
+  badge_id uuid not null references badges(id) on delete cascade,
+  visibility text not null default 'public' check (visibility in ('public', 'private')),
+  assigned_source text not null default 'manual' check (assigned_source in ('auto', 'manual')),
+  assigned_by uuid references admins(user_id),
+  assigned_at timestamptz default now(),
+  unique (student_id, badge_id)
+);
+
+create index if not exists idx_student_badges_student
+  on student_badges (student_id, assigned_at desc);
+create index if not exists idx_mamute_news_visibility
+  on mamute_news (visibility, student_id, created_at desc);
+
+-- Notification records and device push tokens
+create table if not exists notifications (
+  id uuid primary key default gen_random_uuid(),
+  type text not null check (type in ('reminder', 'cancel', 'dues', 'general')),
+  target jsonb not null default '{}'::jsonb,
+  title text not null,
+  body text not null,
+  scheduled_at timestamptz default now(),
+  sent_at timestamptz,
+  created_by uuid references admins(user_id),
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_notifications_target_profile
+  on notifications ((target->>'profileId'), scheduled_at desc);
+
+create table if not exists push_tokens (
+  profile_id uuid not null references auth.users(id) on delete cascade,
+  expo_token text not null,
+  platform text not null check (platform in ('ios', 'android', 'web')),
+  updated_at timestamptz not null default now(),
+  primary key (profile_id, platform)
+);
+
+create table if not exists student_automation_events (
+  id uuid primary key default gen_random_uuid(),
+  student_id uuid not null references students(id) on delete cascade,
+  event_type text not null check (event_type in ('birthday', 'adult_transition')),
+  event_date date not null,
+  details jsonb not null default '{}'::jsonb,
+  created_at timestamptz default now(),
+  unique (student_id, event_type, event_date)
+);
+
+create index if not exists idx_student_automation_events_type_date
+  on student_automation_events (event_type, event_date desc);
+
+create or replace function student_age_years(
+  p_birth_date date,
+  p_on_date date default current_date
+)
+returns int
+language sql
+stable
+returns null on null input
+as $$
+  select extract(year from age(p_on_date, p_birth_date))::int;
+$$;
+
+create or replace function ensure_attendance_badge(p_milestone int)
+returns uuid
+language plpgsql
+as $$
+declare
+  badge_id uuid;
+begin
+  select b.id
+  into badge_id
+  from badges b
+  where b.milestone_count = p_milestone
+  limit 1;
+
+  if badge_id is null then
+    insert into badges (title, description, milestone_count)
+    values (
+      format('%s Class Milestone', p_milestone),
+      format('Awarded for completing %s classes.', p_milestone),
+      p_milestone
+    )
+    on conflict (milestone_count) do update
+      set
+        title = excluded.title,
+        description = excluded.description
+    returning id into badge_id;
+  end if;
+
+  return badge_id;
+end;
+$$;
+
+create or replace function assign_attendance_milestone_badge()
+returns trigger
+language plpgsql
+as $$
+declare
+  allowed_milestones int[] := array[10, 25, 50, 100, 200, 300, 400, 500];
+  attendance_count int;
+  target_milestone int;
+  milestone_badge_id uuid;
+  assigned_student_badge_id uuid;
+  badge_title text;
+  badge_description text;
+  badge_image_path text;
+  badge_image_name text;
+  badge_image_mime_type text;
+begin
+  select count(*)
+  into attendance_count
+  from attendance
+  where student_id = new.student_id;
+
+  if attendance_count = any(allowed_milestones) then
+    target_milestone := attendance_count;
+  end if;
+
+  if target_milestone is null then
+    return new;
+  end if;
+
+  milestone_badge_id := ensure_attendance_badge(target_milestone);
+
+  insert into student_badges (
+    student_id,
+    badge_id,
+    visibility,
+    assigned_source,
+    assigned_by
+  )
+  values (
+    new.student_id,
+    milestone_badge_id,
+    'private',
+    'auto',
+    null
+  )
+  on conflict (student_id, badge_id) do nothing
+  returning id into assigned_student_badge_id;
+
+  if assigned_student_badge_id is null then
+    return new;
+  end if;
+
+  select
+    b.title,
+    b.description,
+    b.image_path,
+    b.image_name,
+    b.image_mime_type
+  into
+    badge_title,
+    badge_description,
+    badge_image_path,
+    badge_image_name,
+    badge_image_mime_type
+  from badges b
+  where b.id = milestone_badge_id;
+
+  insert into mamute_news (
+    title,
+    description,
+    visibility,
+    post_type,
+    student_id,
+    attachment_path,
+    attachment_name,
+    attachment_mime_type
+  )
+  values (
+    format('Badge Earned: %s', coalesce(badge_title, format('%s Class Milestone', target_milestone))),
+    coalesce(
+      badge_description,
+      format('Great work! You reached %s classes and unlocked a new badge.', target_milestone)
+    ),
+    'private',
+    'badge',
+    new.student_id,
+    badge_image_path,
+    badge_image_name,
+    badge_image_mime_type
+  );
+
+  return new;
+end;
+$$;
+
+do $$
+begin
+  perform ensure_attendance_badge(10);
+  perform ensure_attendance_badge(25);
+  perform ensure_attendance_badge(50);
+  perform ensure_attendance_badge(100);
+  perform ensure_attendance_badge(200);
+  perform ensure_attendance_badge(300);
+  perform ensure_attendance_badge(400);
+  perform ensure_attendance_badge(500);
+
+  update student_badges
+  set visibility = 'private'
+  where assigned_source = 'auto' and visibility <> 'private';
+end $$;
+
+create or replace function notify_overdue_membership()
+returns trigger
+language plpgsql
+as $$
+declare
+  actor_id uuid;
+begin
+  if new.membership_standing not in ('overdue', 'active') then
+    return new;
+  end if;
+
+  actor_id := coalesce(auth.uid(), new.created_by);
+
+  if tg_op = 'UPDATE'
+    and old.membership_standing = 'overdue'
+    and new.membership_standing = 'active'
+  then
+    delete from mamute_news
+    where student_id = new.id
+      and visibility = 'private'
+      and title = 'Payment Required';
+
+    delete from mamute_news
+    where student_id = new.id
+      and visibility = 'private'
+      and title = 'Payment Received';
+
+  insert into mamute_news (
+    title,
+    description,
+    visibility,
+    post_type,
+    student_id,
+    expires_at,
+    created_by
+  )
+  values (
+    'Payment Received',
+    'Thank you! We have received your membership payment.',
+    'private',
+    'payment',
+    new.id,
+    now() + interval '24 hours',
+    actor_id
+    );
+
+    return new;
+  end if;
+
+  if new.membership_standing <> 'overdue' then
+    return new;
+  end if;
+
+  if tg_op = 'UPDATE' and coalesce(old.membership_standing, '') = 'overdue' then
+    return new;
+  end if;
+
+  insert into mamute_news (
+    title,
+    description,
+    visibility,
+    post_type,
+    student_id,
+    created_by
+  )
+  values (
+    'Payment Required',
+    'Hey there, we noticed you are behind on membership payment. Please make payment at your earliest convenience to help us keep running smoothly. If you believe this notification is in error, please contact us.',
+    'private',
+    'payment',
+    new.id,
+    actor_id
+  );
+
+  insert into notifications (
+    type,
+    target,
+    title,
+    body,
+    scheduled_at,
+    created_by
+  )
+  select
+    'dues',
+    jsonb_build_object(
+      'profileId', sa.user_id::text,
+      'studentId', new.id::text,
+      'studentNumber', new.student_number
+    ),
+    'Payment Required',
+    'Hey there, we noticed you are behind on membership payment. Please make payment at your earliest convenience to help us keep running smoothly. If you believe this notification is in error, please contact us.',
+    now(),
+    actor_id
+  from student_access sa
+  where sa.student_id = new.id;
+
+  return new;
+end;
+$$;
+
+create or replace function run_student_automation(p_run_date date default current_date)
+returns void
+language plpgsql
+as $$
+begin
+  with birthday_students as (
+    select
+      s.id,
+      s.student_number,
+      coalesce(
+        nullif(trim(coalesce(s.first_name, '') || ' ' || coalesce(s.last_name, '')), ''),
+        format('Student #%s', s.student_number)
+      ) as display_name
+    from students s
+    where s.birth_date is not null
+      and extract(month from s.birth_date) = extract(month from p_run_date)
+      and extract(day from s.birth_date) = extract(day from p_run_date)
+  ),
+  birthday_events as (
+    insert into student_automation_events (student_id, event_type, event_date, details)
+    select
+      b.id,
+      'birthday',
+      p_run_date,
+      jsonb_build_object('studentNumber', b.student_number)
+    from birthday_students b
+    on conflict (student_id, event_type, event_date) do nothing
+    returning student_id
+  )
+  insert into mamute_news (
+    title,
+    description,
+    visibility,
+    post_type,
+    expires_at,
+    created_by
+  )
+  select
+    format('Happy Birthday %s!', b.display_name),
+    'Please join us in wishing them a very happy birthday from the Mamute family!',
+    'public',
+    'birthday',
+    p_run_date::timestamptz + interval '24 hours',
+    null
+  from birthday_students b
+  join birthday_events e on e.student_id = b.id;
+
+  with adult_candidates as (
+    select
+      s.id,
+      s.student_number,
+      s.membership_type,
+      (s.birth_date + interval '13 years')::date as transition_date,
+      coalesce(
+        nullif(trim(coalesce(s.first_name, '') || ' ' || coalesce(s.last_name, '')), ''),
+        format('Student #%s', s.student_number)
+      ) as display_name
+    from students s
+    where s.birth_date is not null
+      and student_age_years(s.birth_date, p_run_date) >= 13
+      and s.membership_type in ('kids-unlimited', 'kids-limited-once-weekly')
+  ),
+  adult_events as (
+    insert into student_automation_events (student_id, event_type, event_date, details)
+    select
+      c.id,
+      'adult_transition',
+      c.transition_date,
+      jsonb_build_object(
+        'studentNumber', c.student_number,
+        'membershipType', c.membership_type
+      )
+    from adult_candidates c
+    on conflict (student_id, event_type, event_date) do nothing
+    returning student_id
+  )
+  insert into notifications (
+    type,
+    target,
+    title,
+    body,
+    scheduled_at,
+    created_by
+  )
+  select
+    'general',
+    jsonb_build_object(
+      'profileId', a.user_id::text,
+      'studentId', c.id::text,
+      'studentNumber', c.student_number
+    ),
+    'Student Now Requires Adult Membership',
+    c.display_name || ' is now age 13+ and is no longer eligible for kids classes or membership types. Please update membership and class eligibility.',
+    now(),
+    null
+  from adult_candidates c
+  join adult_events e on e.student_id = c.id
+  cross join admins a;
+end;
+$$;
+
 -- Attendance records
 create table if not exists attendance (
   id uuid primary key default gen_random_uuid(),
@@ -180,6 +643,16 @@ create table if not exists attendance (
   location_verified boolean not null default false
 );
 
+drop trigger if exists attendance_assign_badges on attendance;
+create trigger attendance_assign_badges
+after insert on attendance
+for each row execute function assign_attendance_milestone_badge();
+
+drop trigger if exists students_notify_overdue_membership on students;
+create trigger students_notify_overdue_membership
+after insert or update of membership_standing on students
+for each row execute function notify_overdue_membership();
+
 -- RLS
 alter table admins enable row level security;
 alter table students enable row level security;
@@ -188,6 +661,11 @@ alter table instructors enable row level security;
 alter table instructor_qualifications enable row level security;
 alter table class_schedules enable row level security;
 alter table attendance enable row level security;
+alter table mamute_news enable row level security;
+alter table badges enable row level security;
+alter table student_badges enable row level security;
+alter table notifications enable row level security;
+alter table push_tokens enable row level security;
 alter table gym_settings enable row level security;
 alter table student_guardians enable row level security;
 
@@ -215,6 +693,30 @@ create policy "admins full access attendance" on attendance
   for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
   with check (exists (select 1 from admins a where a.user_id = auth.uid()));
 
+create policy "admins full access news" on mamute_news
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
+
+drop policy if exists "admins full access badges" on badges;
+create policy "admins full access badges" on badges
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
+
+drop policy if exists "admins full access student badges" on student_badges;
+create policy "admins full access student badges" on student_badges
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
+
+drop policy if exists "admins full access notifications" on notifications;
+create policy "admins full access notifications" on notifications
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
+
+drop policy if exists "admins full access push tokens" on push_tokens;
+create policy "admins full access push tokens" on push_tokens
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
+
 create policy "admins full access guardians" on student_guardians
   for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
   with check (exists (select 1 from admins a where a.user_id = auth.uid()));
@@ -232,7 +734,7 @@ create policy "student guardians read linked" on student_guardians
   );
 
 create policy "student instructors read" on instructors
-  for select using (auth.role() = 'authenticated');
+  for select using (auth.role() = 'authenticated' or auth.role() = 'anon');
 
 -- Student/parent access: read-only to linked student data
 create policy "student access read" on student_access
@@ -256,6 +758,122 @@ create policy "student attendance read" on attendance
 
 create policy "student schedule read" on class_schedules
   for select using (true);
+
+drop policy if exists "student news read active" on mamute_news;
+create policy "student news read active" on mamute_news
+  for select using (
+    (auth.role() = 'authenticated' or auth.role() = 'anon')
+    and (expires_at is null or expires_at > now())
+    and (
+      visibility = 'public'
+      or (
+        visibility = 'private'
+        and auth.uid() is not null
+        and student_id is not null
+        and exists (
+          select 1 from student_access sa
+          where sa.user_id = auth.uid() and sa.student_id = mamute_news.student_id
+        )
+      )
+    )
+  );
+
+drop policy if exists "badge catalog read" on badges;
+create policy "badge catalog read" on badges
+  for select using (true);
+
+drop policy if exists "student badge records read linked" on student_badges;
+create policy "student badge records read linked" on student_badges
+  for select using (
+    exists (
+      select 1 from student_access sa
+      where sa.user_id = auth.uid() and sa.student_id = student_badges.student_id
+    )
+  );
+
+drop policy if exists "student notifications read own" on notifications;
+create policy "student notifications read own" on notifications
+  for select using (
+    auth.uid() is not null
+    and target->>'profileId' = auth.uid()::text
+  );
+
+drop policy if exists "student push tokens manage own" on push_tokens;
+create policy "student push tokens manage own" on push_tokens
+  for all using (
+    auth.uid() is not null and profile_id = auth.uid()
+  )
+  with check (
+    auth.uid() is not null and profile_id = auth.uid()
+  );
+
+do $$
+begin
+  begin
+    create extension if not exists pg_cron;
+  exception
+    when insufficient_privilege then null;
+    when undefined_file then null;
+  end;
+
+  if exists (select 1 from pg_extension where extname = 'pg_cron') then
+    perform cron.unschedule(jobid)
+    from cron.job
+    where jobname = 'mamute-daily-student-automation';
+
+    perform cron.schedule(
+      'mamute-daily-student-automation',
+      '5 5 * * *',
+      $cron$select public.run_student_automation(current_date);$cron$
+    );
+  end if;
+exception
+  when undefined_table then null;
+  when undefined_function then null;
+end $$;
+
+do $$
+begin
+  perform public.run_student_automation(current_date);
+exception
+  when undefined_function then null;
+end $$;
+
+insert into storage.buckets (id, name, public)
+values ('mamute-news', 'mamute-news', true)
+on conflict (id) do update
+set public = excluded.public;
+
+insert into storage.buckets (id, name, public)
+values ('mamute-badges', 'mamute-badges', true)
+on conflict (id) do update
+set public = excluded.public;
+
+drop policy if exists "admins manage mamute news files" on storage.objects;
+create policy "admins manage mamute news files"
+on storage.objects
+for all
+using (
+  bucket_id = 'mamute-news'
+  and exists (select 1 from admins a where a.user_id = auth.uid())
+)
+with check (
+  bucket_id = 'mamute-news'
+  and exists (select 1 from admins a where a.user_id = auth.uid())
+);
+
+drop policy if exists "admins manage mamute badge files" on storage.objects;
+create policy "admins manage mamute badge files"
+on storage.objects
+for all
+using (
+  bucket_id = 'mamute-badges'
+  and exists (select 1 from admins a where a.user_id = auth.uid())
+)
+with check (
+  bucket_id = 'mamute-badges'
+  and exists (select 1 from admins a where a.user_id = auth.uid())
+);
 
 insert into gym_settings (id, latitude, longitude)
 values (1, 43.92171016104063, -78.87364279024405)

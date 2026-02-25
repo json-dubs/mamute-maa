@@ -1,4 +1,4 @@
-﻿import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { createClient, Session } from "@supabase/supabase-js";
 import logo from "../../student-app/assets/images/MamuteLogo.png";
 
@@ -30,7 +30,7 @@ type StudentRecord = {
   student_number: number;
   first_name: string | null;
   last_name: string | null;
-  age: number | null;
+  birth_date: string | null;
   email: string | null;
   membership_type:
     | "adults-unlimited"
@@ -111,6 +111,31 @@ type PendingGuardian = {
   guardian_email: string;
 };
 
+type MamuteNewsRecord = {
+  id: string;
+  title: string;
+  description: string;
+  post_type: "general" | "birthday" | "badge" | "payment";
+  visibility: "public" | "private";
+  student_id: string | null;
+  attachment_path: string | null;
+  attachment_name: string | null;
+  attachment_mime_type: string | null;
+  expires_at: string | null;
+  created_at: string;
+};
+
+type BadgeRecord = {
+  id: string;
+  title: string;
+  description: string | null;
+  image_path: string | null;
+  image_name: string | null;
+  image_mime_type: string | null;
+  milestone_count: number | null;
+  created_at: string;
+};
+
 const membershipTypes: StudentRecord["membership_type"][] = [
   "adults-unlimited",
   "kids-unlimited",
@@ -162,6 +187,9 @@ const dayOptions = [
   { value: 6, label: "Saturday" }
 ];
 
+const newsBucket = "mamute-news";
+const badgesBucket = "mamute-badges";
+
 export function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -193,7 +221,7 @@ export function App() {
   const [studentNumber, setStudentNumber] = useState("");
   const [studentFirstName, setStudentFirstName] = useState("");
   const [studentLastName, setStudentLastName] = useState("");
-  const [studentAge, setStudentAge] = useState("");
+  const [studentBirthDate, setStudentBirthDate] = useState("");
   const [studentEmail, setStudentEmail] = useState("");
   const [studentMembershipType, setStudentMembershipType] =
     useState<StudentRecord["membership_type"]>("adults-unlimited");
@@ -228,6 +256,28 @@ export function App() {
   const [schedulesMessage, setSchedulesMessage] = useState<string | null>(null);
   const [isSchedulesLoading, setIsSchedulesLoading] = useState(false);
   const [isScheduleEditing, setIsScheduleEditing] = useState(false);
+  const [newsPosts, setNewsPosts] = useState<MamuteNewsRecord[]>([]);
+  const [newsTitle, setNewsTitle] = useState("");
+  const [newsDescription, setNewsDescription] = useState("");
+  const [newsExpiresAt, setNewsExpiresAt] = useState("");
+  const [newsAttachment, setNewsAttachment] = useState<File | null>(null);
+  const [newsMessage, setNewsMessage] = useState<string | null>(null);
+  const [isNewsLoading, setIsNewsLoading] = useState(false);
+  const [isNewsSaving, setIsNewsSaving] = useState(false);
+  const [badges, setBadges] = useState<BadgeRecord[]>([]);
+  const [badgeTitle, setBadgeTitle] = useState("");
+  const [badgeDescription, setBadgeDescription] = useState("");
+  const [badgeImage, setBadgeImage] = useState<File | null>(null);
+  const [selectedBadgeId, setSelectedBadgeId] = useState("");
+  const [badgeAssignVisibility, setBadgeAssignVisibility] = useState<"private" | "public">(
+    "private"
+  );
+  const [badgeStudentQuery, setBadgeStudentQuery] = useState("");
+  const [selectedBadgeStudentIds, setSelectedBadgeStudentIds] = useState<string[]>([]);
+  const [badgesMessage, setBadgesMessage] = useState<string | null>(null);
+  const [isBadgesLoading, setIsBadgesLoading] = useState(false);
+  const [isBadgeSaving, setIsBadgeSaving] = useState(false);
+  const [isBadgeAssigning, setIsBadgeAssigning] = useState(false);
 
   const supabase = useMemo(() => {
     const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -277,6 +327,8 @@ export function App() {
       loadQualifications();
       loadAttendance();
       loadAllGuardians();
+      loadNews();
+      loadBadges();
     } else {
       setStudents([]);
       setInstructors([]);
@@ -285,6 +337,8 @@ export function App() {
       setAttendanceRows([]);
       setGuardianRows([]);
       setAllGuardianRows([]);
+      setNewsPosts([]);
+      setBadges([]);
     }
   }, [session, isAdmin]);
 
@@ -391,7 +445,7 @@ export function App() {
     setStudentNumber(String(student.student_number));
     setStudentFirstName(student.first_name ?? "");
     setStudentLastName(student.last_name ?? "");
-    setStudentAge(student.age ? String(student.age) : "");
+    setStudentBirthDate(student.birth_date ?? "");
     setStudentEmail(student.email ?? "");
     setStudentMembershipType(student.membership_type);
     setStudentMembershipStanding(student.membership_standing);
@@ -404,7 +458,7 @@ export function App() {
     setStudentNumber("");
     setStudentFirstName("");
     setStudentLastName("");
-    setStudentAge("");
+    setStudentBirthDate("");
     setStudentEmail("");
     setStudentMembershipType("adults-unlimited");
     setStudentMembershipStanding("active");
@@ -434,14 +488,18 @@ export function App() {
       student_number: parsedNumber,
       first_name: studentFirstName.trim(),
       last_name: studentLastName.trim(),
-      age: studentAge ? Number.parseInt(studentAge, 10) : null,
+      birth_date: studentBirthDate || null,
       email: studentEmail.trim() || null,
       membership_type: studentMembershipType,
       membership_standing: studentMembershipStanding
     };
     const guardianDrafts = normalizeGuardians(pendingGuardians);
+    const previousStanding = editingStudentId
+      ? students.find((student) => student.id === editingStudentId)?.membership_standing ?? null
+      : null;
 
     try {
+      let savedStudentId: string | null = editingStudentId;
       if (editingStudentId) {
         const { error } = await supabase
           .from("students")
@@ -457,9 +515,16 @@ export function App() {
           .single();
         if (error) throw error;
         const studentId = data?.id;
+        savedStudentId = studentId ?? null;
         if (studentId) {
           await upsertGuardiansForStudent(studentId, guardianDrafts);
         }
+      }
+
+      const shouldDispatchOverduePush =
+        payload.membership_standing === "overdue" && previousStanding !== "overdue";
+      if (shouldDispatchOverduePush && savedStudentId) {
+        await sendOverduePushNotifications(savedStudentId);
       }
       resetStudentForm();
       await loadStudents();
@@ -487,6 +552,36 @@ export function App() {
     line
       .split(",")
       .map((item) => item.trim());
+
+  const parseBirthDateFromCsvValue = (value: string | undefined) => {
+    if (!value) return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      return trimmed;
+    }
+
+    const parsedAge = Number.parseInt(trimmed, 10);
+    if (Number.isFinite(parsedAge) && parsedAge > 0) {
+      const today = new Date();
+      const estimated = new Date(
+        Date.UTC(
+          today.getUTCFullYear() - parsedAge,
+          today.getUTCMonth(),
+          today.getUTCDate()
+        )
+      );
+      return estimated.toISOString().slice(0, 10);
+    }
+
+    const parsedDate = new Date(trimmed);
+    if (!Number.isNaN(parsedDate.getTime())) {
+      return parsedDate.toISOString().slice(0, 10);
+    }
+
+    return null;
+  };
 
   const normalizeGuardians = (guardians: PendingGuardian[]) => {
     const byEmail = new Map<string, PendingGuardian>();
@@ -555,7 +650,7 @@ export function App() {
           studentNumber,
           firstName,
           lastName,
-          age,
+          birthDateOrAge,
           email,
           membershipType,
           membershipStanding,
@@ -567,7 +662,7 @@ export function App() {
           student_number: Number.parseInt(studentNumber, 10),
           first_name: firstName,
           last_name: lastName,
-          age: age ? Number.parseInt(age, 10) : null,
+          birth_date: parseBirthDateFromCsvValue(birthDateOrAge),
           email: email || null,
           membership_type: membershipType,
           membership_standing: membershipStanding,
@@ -580,7 +675,7 @@ export function App() {
         student_number: row.student_number,
         first_name: row.first_name,
         last_name: row.last_name,
-        age: row.age,
+        birth_date: row.birth_date,
         email: row.email,
         membership_type: row.membership_type,
         membership_standing: row.membership_standing
@@ -777,6 +872,353 @@ export function App() {
       setAttendanceMessage(error?.message ?? "Failed to load attendance");
     } finally {
       setIsAttendanceLoading(false);
+    }
+  };
+
+  const sendOverduePushNotifications = async (studentId: string) => {
+    try {
+      const { data: accessRows, error } = await supabase
+        .from("student_access")
+        .select("user_id")
+        .eq("student_id", studentId);
+      if (error) throw error;
+
+      const userIds = [
+        ...new Set((accessRows ?? []).map((row: { user_id: string }) => row.user_id))
+      ];
+      for (const userId of userIds) {
+        await supabase.functions.invoke("sendNotification", {
+          body: {
+            id: crypto.randomUUID(),
+            title: "Payment Required",
+            body: "Hey there, we noticed you are behind on membership payment. Please make payment at your earliest convenience to help us keep running smoothly. If you believe this notification is in error, please contact us.",
+            target: { profileId: userId }
+          }
+        });
+      }
+    } catch (error) {
+      console.warn("Failed to dispatch overdue push notification", error);
+    }
+  };
+
+  const loadNews = async () => {
+    setNewsMessage(null);
+    setIsNewsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("mamute_news")
+        .select(
+          "id, title, description, post_type, visibility, student_id, attachment_path, attachment_name, attachment_mime_type, expires_at, created_at"
+        )
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      setNewsPosts((data as MamuteNewsRecord[]) ?? []);
+    } catch (error: any) {
+      setNewsMessage(error?.message ?? "Failed to load Mamute News");
+    } finally {
+      setIsNewsLoading(false);
+    }
+  };
+
+  const onNewsAttachmentChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    setNewsAttachment(file);
+  };
+
+  const submitNewsPost = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!session) {
+      setNewsMessage("Sign in as admin to create news posts.");
+      return;
+    }
+
+    const title = newsTitle.trim();
+    const description = newsDescription.trim();
+    if (!title || !description) {
+      setNewsMessage("Title and description are required.");
+      return;
+    }
+
+    setIsNewsSaving(true);
+    setNewsMessage(null);
+
+    let attachmentPath: string | null = null;
+    let attachmentName: string | null = null;
+    let attachmentMimeType: string | null = null;
+
+    try {
+      if (newsAttachment) {
+        const extension = newsAttachment.name.includes(".")
+          ? newsAttachment.name.split(".").pop()
+          : "";
+        const filename = `${crypto.randomUUID()}${extension ? `.${extension}` : ""}`;
+        const path = `posts/${new Date().toISOString().slice(0, 10)}/${filename}`;
+        const { error: uploadError } = await supabase.storage
+          .from(newsBucket)
+          .upload(path, newsAttachment, {
+            upsert: false,
+            contentType: newsAttachment.type || undefined
+          });
+        if (uploadError) throw uploadError;
+        attachmentPath = path;
+        attachmentName = newsAttachment.name;
+        attachmentMimeType = newsAttachment.type || null;
+      }
+
+      const { error } = await supabase.from("mamute_news").insert({
+        title,
+        description,
+        post_type: "general",
+        visibility: "public",
+        student_id: null,
+        attachment_path: attachmentPath,
+        attachment_name: attachmentName,
+        attachment_mime_type: attachmentMimeType,
+        expires_at: newsExpiresAt ? new Date(newsExpiresAt).toISOString() : null,
+        created_by: session.user.id
+      });
+      if (error) throw error;
+
+      setNewsTitle("");
+      setNewsDescription("");
+      setNewsExpiresAt("");
+      setNewsAttachment(null);
+      const newsFileInput = document.getElementById("mamute-news-attachment") as
+        | HTMLInputElement
+        | null;
+      if (newsFileInput) newsFileInput.value = "";
+      await loadNews();
+    } catch (error: any) {
+      setNewsMessage(error?.message ?? "Failed to create news post");
+    } finally {
+      setIsNewsSaving(false);
+    }
+  };
+
+  const deleteNewsPost = async (post: MamuteNewsRecord) => {
+    if (!session) return;
+    const confirmed = window.confirm("Delete this news post?");
+    if (!confirmed) return;
+    setNewsMessage(null);
+    try {
+      if (post.attachment_path) {
+        await supabase.storage.from(newsBucket).remove([post.attachment_path]);
+      }
+      const { error } = await supabase.from("mamute_news").delete().eq("id", post.id);
+      if (error) throw error;
+      await loadNews();
+    } catch (error: any) {
+      setNewsMessage(error?.message ?? "Failed to delete news post");
+    }
+  };
+
+  const loadBadges = async () => {
+    setBadgesMessage(null);
+    setIsBadgesLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("badges")
+        .select(
+          "id, title, description, image_path, image_name, image_mime_type, milestone_count, created_at"
+        )
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      setBadges((data as BadgeRecord[]) ?? []);
+    } catch (error: any) {
+      setBadgesMessage(error?.message ?? "Failed to load badges");
+    } finally {
+      setIsBadgesLoading(false);
+    }
+  };
+
+  const onBadgeImageChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    setBadgeImage(file);
+  };
+
+  const submitBadge = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!session) {
+      setBadgesMessage("Sign in as admin to create badges.");
+      return;
+    }
+
+    const title = badgeTitle.trim();
+    if (!title) {
+      setBadgesMessage("Badge title is required.");
+      return;
+    }
+
+    setIsBadgeSaving(true);
+    setBadgesMessage(null);
+
+    let imagePath: string | null = null;
+    let imageName: string | null = null;
+    let imageMimeType: string | null = null;
+
+    try {
+      if (badgeImage) {
+        const extension = badgeImage.name.includes(".")
+          ? badgeImage.name.split(".").pop()
+          : "";
+        const filename = `${crypto.randomUUID()}${extension ? `.${extension}` : ""}`;
+        const path = `catalog/${new Date().toISOString().slice(0, 10)}/${filename}`;
+        const { error: uploadError } = await supabase.storage
+          .from(badgesBucket)
+          .upload(path, badgeImage, {
+            upsert: false,
+            contentType: badgeImage.type || undefined
+          });
+        if (uploadError) throw uploadError;
+        imagePath = path;
+        imageName = badgeImage.name;
+        imageMimeType = badgeImage.type || null;
+      }
+
+      const { error } = await supabase.from("badges").insert({
+        title,
+        description: badgeDescription.trim() || null,
+        image_path: imagePath,
+        image_name: imageName,
+        image_mime_type: imageMimeType,
+        created_by: session.user.id
+      });
+      if (error) throw error;
+
+      setBadgeTitle("");
+      setBadgeDescription("");
+      setBadgeImage(null);
+      const fileInput = document.getElementById("mamute-badge-image") as
+        | HTMLInputElement
+        | null;
+      if (fileInput) fileInput.value = "";
+      await loadBadges();
+    } catch (error: any) {
+      setBadgesMessage(error?.message ?? "Failed to create badge");
+    } finally {
+      setIsBadgeSaving(false);
+    }
+  };
+
+  const toggleBadgeStudentSelection = (studentId: string) => {
+    setSelectedBadgeStudentIds((previous) =>
+      previous.includes(studentId)
+        ? previous.filter((id) => id !== studentId)
+        : [...previous, studentId]
+    );
+  };
+
+  const assignBadgeToStudents = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!session) {
+      setBadgesMessage("Sign in as admin to assign badges.");
+      return;
+    }
+    if (!selectedBadgeId) {
+      setBadgesMessage("Select a badge to assign.");
+      return;
+    }
+    if (!selectedBadgeStudentIds.length) {
+      setBadgesMessage("Select at least one student.");
+      return;
+    }
+
+    const badge = badges.find((item) => item.id === selectedBadgeId);
+    if (!badge) {
+      setBadgesMessage("Selected badge was not found.");
+      return;
+    }
+
+    setIsBadgeAssigning(true);
+    setBadgesMessage(null);
+    try {
+      const { data: existingRows, error: existingError } = await supabase
+        .from("student_badges")
+        .select("student_id")
+        .eq("badge_id", selectedBadgeId)
+        .in("student_id", selectedBadgeStudentIds);
+      if (existingError) throw existingError;
+
+      const existingStudentIds = new Set(
+        (existingRows ?? []).map((row: { student_id: string }) => row.student_id)
+      );
+      const targetStudentIds = selectedBadgeStudentIds.filter(
+        (studentId) => !existingStudentIds.has(studentId)
+      );
+
+      if (!targetStudentIds.length) {
+        setBadgesMessage("Selected students already have this badge.");
+        return;
+      }
+
+      const { error: assignError } = await supabase.from("student_badges").insert(
+        targetStudentIds.map((studentId) => ({
+          student_id: studentId,
+          badge_id: selectedBadgeId,
+          visibility: badgeAssignVisibility,
+          assigned_source: "manual",
+          assigned_by: session.user.id
+        }))
+      );
+      if (assignError) throw assignError;
+
+      const expiresAt = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+      const selectedStudents = students.filter((student) =>
+        targetStudentIds.includes(student.id)
+      );
+
+      if (badgeAssignVisibility === "public") {
+        const studentNames = selectedStudents
+          .map((student) => [student.first_name, student.last_name].filter(Boolean).join(" "))
+          .map((name) => (name ? name : "Student"))
+          .join(", ");
+        const { error: newsError } = await supabase.from("mamute_news").insert({
+          title: `Badge Award: ${badge.title}`,
+          description: `Congratulations to ${studentNames} for earning the ${badge.title} badge.`,
+          post_type: "badge",
+          visibility: "public",
+          student_id: null,
+          attachment_path: badge.image_path,
+          attachment_name: badge.image_name,
+          attachment_mime_type: badge.image_mime_type,
+          expires_at: expiresAt,
+          created_by: session.user.id
+        });
+        if (newsError) throw newsError;
+      } else {
+        const privatePosts = selectedStudents.map((student) => {
+          const studentName =
+            [student.first_name, student.last_name].filter(Boolean).join(" ") || "Student";
+          return {
+            title: `Badge Award: ${badge.title}`,
+            description: `${studentName} has earned the ${badge.title} badge.`,
+            post_type: "badge",
+            visibility: "private",
+            student_id: student.id,
+            attachment_path: badge.image_path,
+            attachment_name: badge.image_name,
+            attachment_mime_type: badge.image_mime_type,
+            expires_at: expiresAt,
+            created_by: session.user.id
+          };
+        });
+        if (privatePosts.length) {
+          const { error: privatePostError } = await supabase
+            .from("mamute_news")
+            .insert(privatePosts);
+          if (privatePostError) throw privatePostError;
+        }
+      }
+
+      setBadgesMessage(
+        `Assigned ${badge.title} to ${targetStudentIds.length} student${targetStudentIds.length === 1 ? "" : "s"}.`
+      );
+      setSelectedBadgeStudentIds([]);
+      await loadNews();
+    } catch (error: any) {
+      setBadgesMessage(error?.message ?? "Failed to assign badge");
+    } finally {
+      setIsBadgeAssigning(false);
     }
   };
 
@@ -1080,6 +1522,20 @@ export function App() {
     );
   });
 
+  const filteredBadgeStudents = students.filter((student) => {
+    const query = badgeStudentQuery.trim().toLowerCase();
+    if (!query) return true;
+    const studentDisplayName = [student.first_name, student.last_name]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return (
+      String(student.student_number).includes(query) ||
+      studentDisplayName.includes(query) ||
+      (student.email ?? "").toLowerCase().includes(query)
+    );
+  });
+
   const isInstructorQualified = (
     instructorId: string,
     classType: ClassScheduleRecord["class_type"]
@@ -1377,6 +1833,279 @@ export function App() {
           </section>
 
           <section className="panel">
+            <h2>Mamute News</h2>
+            <p className="muted">
+              Publish gym news and events to the mobile app. Attachments support images and
+              documents (including PDF).
+            </p>
+            <form className="form" onSubmit={submitNewsPost}>
+              <label className="field">
+                <span>Title</span>
+                <input
+                  className="input"
+                  value={newsTitle}
+                  onChange={(event) => setNewsTitle(event.target.value)}
+                  placeholder="Tournament prep camp this Saturday"
+                  required
+                  disabled={!session || isNewsSaving}
+                />
+              </label>
+              <label className="field" style={{ width: "100%" }}>
+                <span>Description</span>
+                <textarea
+                  className="input"
+                  rows={4}
+                  value={newsDescription}
+                  onChange={(event) => setNewsDescription(event.target.value)}
+                  placeholder="Share details with students and guardians..."
+                  required
+                  disabled={!session || isNewsSaving}
+                />
+              </label>
+              <label className="field">
+                <span>Expiry (optional)</span>
+                <input
+                  className="input"
+                  type="datetime-local"
+                  value={newsExpiresAt}
+                  onChange={(event) => setNewsExpiresAt(event.target.value)}
+                  disabled={!session || isNewsSaving}
+                />
+              </label>
+              <label className="field">
+                <span>Attachment (optional)</span>
+                <input
+                  id="mamute-news-attachment"
+                  className="input"
+                  type="file"
+                  accept="image/*,application/pdf,.pdf,.doc,.docx,.txt"
+                  onChange={onNewsAttachmentChange}
+                  disabled={!session || isNewsSaving}
+                />
+                {newsAttachment ? (
+                  <span className="helper">Selected: {newsAttachment.name}</span>
+                ) : null}
+              </label>
+              <div className="form-actions">
+                <button className="button" type="submit" disabled={!session || isNewsSaving}>
+                  {isNewsSaving ? "Posting..." : "Post News"}
+                </button>
+              </div>
+            </form>
+            {newsMessage ? <p className="error">{newsMessage}</p> : null}
+            {isNewsLoading ? <p className="muted">Loading news posts...</p> : null}
+            {newsPosts.length ? (
+              <div className="results">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Title</th>
+                      <th>Expires</th>
+                      <th>Attachment</th>
+                      <th>Posted</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {newsPosts.map((post) => (
+                      <tr key={post.id}>
+                        <td>
+                          <strong>{post.title}</strong>
+                          <div className="helper">{post.description}</div>
+                        </td>
+                        <td>
+                          {post.expires_at ? new Date(post.expires_at).toLocaleString() : "No expiry"}
+                        </td>
+                        <td>{post.attachment_name ?? "-"}</td>
+                        <td>{new Date(post.created_at).toLocaleString()}</td>
+                        <td>
+                          <div className="row-actions">
+                            <button
+                              className="button secondary"
+                              type="button"
+                              onClick={() => deleteNewsPost(post)}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="muted">No news posts yet.</p>
+            )}
+          </section>
+
+          <section className="panel">
+            <h2>Badges</h2>
+            <p className="muted">
+              Create reward badges and assign them to students. Private assignments are visible
+              only to users linked to that student, while public assignments post to everyone.
+            </p>
+
+            <div className="panel nested">
+              <h3>Create Badge</h3>
+              <form className="form" onSubmit={submitBadge}>
+                <label className="field">
+                  <span>Title</span>
+                  <input
+                    className="input"
+                    value={badgeTitle}
+                    onChange={(event) => setBadgeTitle(event.target.value)}
+                    placeholder="25 Class Milestone"
+                    required
+                    disabled={!session || isBadgeSaving}
+                  />
+                </label>
+                <label className="field" style={{ width: "100%" }}>
+                  <span>Description</span>
+                  <textarea
+                    className="input"
+                    rows={3}
+                    value={badgeDescription}
+                    onChange={(event) => setBadgeDescription(event.target.value)}
+                    placeholder="Awarded for dedicated training."
+                    disabled={!session || isBadgeSaving}
+                  />
+                </label>
+                <label className="field">
+                  <span>Image (optional)</span>
+                  <input
+                    id="mamute-badge-image"
+                    className="input"
+                    type="file"
+                    accept="image/*,application/pdf,.pdf"
+                    onChange={onBadgeImageChange}
+                    disabled={!session || isBadgeSaving}
+                  />
+                  {badgeImage ? (
+                    <span className="helper">Selected: {badgeImage.name}</span>
+                  ) : null}
+                </label>
+                <div className="form-actions">
+                  <button className="button" type="submit" disabled={!session || isBadgeSaving}>
+                    {isBadgeSaving ? "Creating..." : "Create Badge"}
+                  </button>
+                </div>
+              </form>
+              {isBadgesLoading ? <p className="muted">Loading badges...</p> : null}
+              {badges.length ? (
+                <div className="results">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Title</th>
+                        <th>Description</th>
+                        <th>Milestone</th>
+                        <th>Image</th>
+                        <th>Created</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {badges.map((badge) => (
+                        <tr key={badge.id}>
+                          <td>{badge.title}</td>
+                          <td>{badge.description ?? "-"}</td>
+                          <td>{badge.milestone_count ?? "-"}</td>
+                          <td>{badge.image_name ?? "-"}</td>
+                          <td>{new Date(badge.created_at).toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="muted">No badges created yet.</p>
+              )}
+            </div>
+
+            <div className="panel nested">
+              <h3>Assign Badge</h3>
+              <form className="form" onSubmit={assignBadgeToStudents}>
+                <label className="field">
+                  <span>Badge</span>
+                  <select
+                    className="input"
+                    value={selectedBadgeId}
+                    onChange={(event) => setSelectedBadgeId(event.target.value)}
+                    disabled={!session || isBadgeAssigning}
+                  >
+                    <option value="">Select badge</option>
+                    {badges.map((badge) => (
+                      <option key={badge.id} value={badge.id}>
+                        {badge.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Visibility</span>
+                  <select
+                    className="input"
+                    value={badgeAssignVisibility}
+                    onChange={(event) =>
+                      setBadgeAssignVisibility(event.target.value as "private" | "public")
+                    }
+                    disabled={!session || isBadgeAssigning}
+                  >
+                    <option value="private">Private</option>
+                    <option value="public">Public</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Search Students</span>
+                  <input
+                    className="input"
+                    value={badgeStudentQuery}
+                    onChange={(event) => setBadgeStudentQuery(event.target.value)}
+                    placeholder="Search by name, student number, or email"
+                    disabled={!session || isBadgeAssigning}
+                  />
+                </label>
+                <div className="field" style={{ width: "100%" }}>
+                  <span>Select one or more students</span>
+                  <div className="chip-group">
+                    {filteredBadgeStudents.map((student) => {
+                      const checked = selectedBadgeStudentIds.includes(student.id);
+                      const label =
+                        [student.first_name, student.last_name].filter(Boolean).join(" ") ||
+                        "Student";
+                      return (
+                        <button
+                          key={student.id}
+                          type="button"
+                          className={checked ? "chip active" : "chip"}
+                          onClick={() => toggleBadgeStudentSelection(student.id)}
+                          disabled={!session || isBadgeAssigning}
+                        >
+                          {label} #{student.student_number}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <span className="helper">
+                    Selected: {selectedBadgeStudentIds.length} student
+                    {selectedBadgeStudentIds.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <div className="form-actions">
+                  <button
+                    className="button"
+                    type="submit"
+                    disabled={!session || isBadgeAssigning}
+                  >
+                    {isBadgeAssigning ? "Assigning..." : "Assign Badge"}
+                  </button>
+                </div>
+              </form>
+            </div>
+            {badgesMessage ? <p className="error">{badgesMessage}</p> : null}
+          </section>
+
+          <section className="panel">
             <div>
           <h2>Students</h2>
           <p className="muted">Create, edit, and manage student profiles.</p>
@@ -1397,7 +2126,7 @@ export function App() {
               rows={4}
               value={csvInput}
               onChange={(event) => setCsvInput(event.target.value)}
-              placeholder="student_number,first_name,last_name,age,email,membership_type,membership_standing,guardian_first_name,guardian_last_name,guardian_email"
+              placeholder="student_number,first_name,last_name,birth_date,email,membership_type,membership_standing,guardian_first_name,guardian_last_name,guardian_email"
               disabled={!session || isCsvImporting}
             />
           </label>
@@ -1446,12 +2175,12 @@ export function App() {
               />
             </label>
             <label className="field">
-              <span>Age</span>
+              <span>Birthday</span>
               <input
                 className="input"
-                value={studentAge}
-                onChange={(event) => setStudentAge(event.target.value)}
-                placeholder="14"
+                type="date"
+                value={studentBirthDate}
+                onChange={(event) => setStudentBirthDate(event.target.value)}
                 disabled={!session}
               />
             </label>
@@ -1658,6 +2387,8 @@ export function App() {
                   <tr>
                     <th>#</th>
                     <th>Name</th>
+                    <th>Birthday</th>
+                    <th>Age</th>
                     <th>Type</th>
                     <th>Standing</th>
                     <th>Guardian #1</th>
@@ -1673,6 +2404,8 @@ export function App() {
                         {[student.first_name, student.last_name].filter(Boolean).join(" ") ||
                           "-"}
                       </td>
+                      <td>{student.birth_date ?? "-"}</td>
+                      <td>{calculateAgeFromBirthDate(student.birth_date) ?? "-"}</td>
                       <td>{student.membership_type}</td>
                       <td>{student.membership_standing}</td>
                       <td>
@@ -1948,3 +2681,19 @@ export function App() {
     </div>
   );
 }
+
+function calculateAgeFromBirthDate(birthDate: string | null | undefined) {
+  if (!birthDate) return null;
+  const parsed = new Date(`${birthDate}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  const today = new Date();
+  let age = today.getFullYear() - parsed.getFullYear();
+  const monthDelta = today.getMonth() - parsed.getMonth();
+  const dayDelta = today.getDate() - parsed.getDate();
+  if (monthDelta < 0 || (monthDelta === 0 && dayDelta < 0)) {
+    age -= 1;
+  }
+  return age >= 0 ? age : null;
+}
+

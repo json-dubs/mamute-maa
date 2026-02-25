@@ -8,6 +8,7 @@ export const config = {
 interface AttendanceRequest {
   barcode?: string;
   studentNumbers?: number[];
+  scheduleId?: string;
   deviceId?: string;
   source: "frontdesk" | "mobile";
   locationVerified?: boolean;
@@ -32,6 +33,8 @@ interface ScheduleRow {
 }
 
 const DEFAULT_TIMEZONE = "America/Toronto";
+const MOBILE_LATE_CHECKIN_LIMIT_MINUTES = -30;
+const MOBILE_EARLY_CHECKIN_LIMIT_MINUTES = 4 * 60;
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -109,12 +112,37 @@ Deno.serve(async (req) => {
       }
     }
 
-    const schedule = await findNextSchedule(supabase, timezone);
-    if (!schedule) {
-      return Response.json(
-        { error: "NO_CLASS_AVAILABLE" },
-        { status: 404, headers: corsHeaders }
-      );
+    let schedule: ScheduleRow | null = null;
+    if (payload.source === "mobile") {
+      const eligible = await findMobileEligibleSchedules(supabase);
+      if (!eligible.length) {
+        return Response.json(
+          { error: "NO_CLASS_AVAILABLE" },
+          { status: 404, headers: corsHeaders }
+        );
+      }
+      if (payload.scheduleId) {
+        schedule = eligible.find((item) => item.id === payload.scheduleId) ?? null;
+        if (!schedule) {
+          return Response.json(
+            {
+              error: "SCHEDULE_NOT_ELIGIBLE",
+              eligibleScheduleIds: eligible.map((item) => item.id)
+            },
+            { status: 403, headers: corsHeaders }
+          );
+        }
+      } else {
+        schedule = eligible[0];
+      }
+    } else {
+      schedule = await findFrontdeskSchedule(supabase, timezone);
+      if (!schedule) {
+        return Response.json(
+          { error: "NO_CLASS_AVAILABLE" },
+          { status: 404, headers: corsHeaders }
+        );
+      }
     }
 
     const results = [];
@@ -211,7 +239,10 @@ async function verifyStudentAccess(
   return (data ?? []).length === studentIds.length;
 }
 
-async function findNextSchedule(client: any, timezone: string): Promise<ScheduleRow | null> {
+async function findFrontdeskSchedule(
+  client: any,
+  timezone: string
+): Promise<ScheduleRow | null> {
   const now = new Date();
   const dayOfWeek = getDayOfWeek(now, timezone);
   const { data, error } = await client
@@ -234,6 +265,42 @@ async function findNextSchedule(client: any, timezone: string): Promise<Schedule
     timeToMinutes(a.start_time) - timeToMinutes(b.start_time)
   );
   return eligible[0] ?? null;
+}
+
+async function findMobileEligibleSchedules(client: any): Promise<ScheduleRow[]> {
+  const { data, error } = await client
+    .from("class_schedules")
+    .select(
+      "id, class_type, instructor_id, day_of_week, start_time, end_time, timezone"
+    )
+    .eq("is_active", true);
+  if (error) return [];
+  const now = new Date();
+  return (data ?? [])
+    .map((row: ScheduleRow) => ({
+      row,
+      delta: minutesUntilSchedule(row, now)
+    }))
+    .filter(
+      (item) =>
+        item.delta >= MOBILE_LATE_CHECKIN_LIMIT_MINUTES &&
+        item.delta <= MOBILE_EARLY_CHECKIN_LIMIT_MINUTES
+    )
+    .sort((a, b) => a.delta - b.delta)
+    .slice(0, 3)
+    .map((item) => item.row);
+}
+
+function minutesUntilSchedule(schedule: ScheduleRow, now: Date) {
+  const timezone = safeTimeZone(schedule.timezone || DEFAULT_TIMEZONE);
+  const nowDay = getDayOfWeek(now, timezone);
+  const nowMinutes = getMinutesOfDay(now, timezone);
+  const startMinutes = timeToMinutes(schedule.start_time);
+  let delta = (schedule.day_of_week - nowDay) * 24 * 60 + (startMinutes - nowMinutes);
+  if (delta < MOBILE_LATE_CHECKIN_LIMIT_MINUTES) {
+    delta += 7 * 24 * 60;
+  }
+  return delta;
 }
 
 function getDayOfWeek(date: Date, timezone: string) {

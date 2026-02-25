@@ -1,9 +1,13 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { getSupabaseClient, registerPushToken } from "@mamute/api";
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import Constants from "expo-constants";
 import { useFonts } from 'expo-font';
+import * as Notifications from "expo-notifications";
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
+import { Platform } from "react-native";
 import 'react-native-reanimated';
 
 import { useColorScheme } from '@/components/useColorScheme';
@@ -20,6 +24,13 @@ export const unstable_settings = {
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false
+  })
+});
 
 export default function RootLayout() {
   const [loaded, error] = useFonts({
@@ -47,6 +58,49 @@ export default function RootLayout() {
 
 function RootLayoutNav() {
   const colorScheme = useColorScheme();
+  const supabase = useMemo(() => getSupabaseClient(), []);
+
+  const syncPushToken = useCallback(async () => {
+    if (Platform.OS !== "android" && Platform.OS !== "ios") return;
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const userId = sessionData.session?.user.id;
+      if (!userId) return;
+
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+      if (finalStatus !== "granted") {
+        const permission = await Notifications.requestPermissionsAsync();
+        finalStatus = permission.status;
+      }
+      if (finalStatus !== "granted") return;
+
+      const projectId =
+        Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+      const tokenResponse = await Notifications.getExpoPushTokenAsync(
+        projectId ? { projectId } : undefined
+      );
+      const platform = Platform.OS === "ios" ? "ios" : Platform.OS === "android" ? "android" : "web";
+
+      await registerPushToken({
+        profileId: userId,
+        token: tokenResponse.data,
+        platform,
+        updatedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      console.warn("push token registration failed", error);
+    }
+  }, [supabase]);
+
+  useEffect(() => {
+    void syncPushToken();
+    const { data: subscription } = supabase.auth.onAuthStateChange(() => {
+      void syncPushToken();
+    });
+    return () => subscription.subscription.unsubscribe();
+  }, [supabase, syncPushToken]);
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>

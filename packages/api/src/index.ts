@@ -4,3 +4,4 @@ export * from "./profiles";
 export * from "./schedules";
 export * from "./notifications";
 export * from "./student-access";
+export * from "./news";

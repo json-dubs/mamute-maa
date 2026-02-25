@@ -1,8 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
-import { Pressable, TextInput } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Alert,
+  Image,
+  ImageSourcePropType,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  View
+} from "react-native";
 import { Badge, Card, Row, Screen, Text, uiColors } from "@mamute/ui";
 import { HeroHeader } from "../../components/HeroHeader";
 import {
+  fetchNotifications,
   fetchLinkedStudents,
   getSupabaseClient,
   registerMobileUser,
@@ -11,8 +21,20 @@ import {
 } from "@mamute/api";
 import { LinkedStudentSummary } from "@mamute/types";
 import { classifyStanding } from "@mamute/utils";
+import { useRealtimeRefresh } from "../../components/useRealtimeRefresh";
 
 type LinkStep = "email" | "students";
+
+const milestoneBadgeImages: Record<number, ImageSourcePropType> = {
+  10: require("../../assets/images/10classes.png"),
+  25: require("../../assets/images/25classes.png"),
+  50: require("../../assets/images/50classes.png"),
+  100: require("../../assets/images/100classes.png"),
+  200: require("../../assets/images/200classes.png"),
+  300: require("../../assets/images/300classes.png"),
+  400: require("../../assets/images/400classes.png"),
+  500: require("../../assets/images/500classes.png")
+};
 
 function formatAccountError(error: any, fallback: string) {
   const raw =
@@ -54,13 +76,12 @@ export default function AccountScreen() {
   const [email, setEmail] = useState("");
   const [step, setStep] = useState<LinkStep>("email");
   const [studentNumbers, setStudentNumbers] = useState<string[]>([""]);
-  const [availableStudents, setAvailableStudents] = useState<
-    Array<{ id: string; studentNumber: number; firstName?: string | null; lastName?: string | null }>
-  >([]);
 
   const [linkedStudents, setLinkedStudents] = useState<LinkedStudentSummary[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const seenNotificationIdsRef = useRef<Set<string>>(new Set());
+  const notificationsInitializedRef = useRef(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -72,15 +93,72 @@ export default function AccountScreen() {
     return () => subscription.subscription.unsubscribe();
   }, [supabase]);
 
-  useEffect(() => {
+  const loadLinkedStudents = useCallback(async () => {
     if (!sessionUserId) {
       setLinkedStudents([]);
       return;
     }
-    fetchLinkedStudents()
-      .then((rows) => setLinkedStudents(rows))
-      .catch(() => setLinkedStudents([]));
+    try {
+      const rows = await fetchLinkedStudents();
+      setLinkedStudents(rows);
+    } catch {
+      setLinkedStudents([]);
+    }
   }, [sessionUserId]);
+
+  const loadNotifications = useCallback(async () => {
+    if (!sessionUserId) {
+      seenNotificationIdsRef.current.clear();
+      notificationsInitializedRef.current = false;
+      return;
+    }
+
+    try {
+      const rows = await fetchNotifications(sessionUserId);
+      if (!notificationsInitializedRef.current) {
+        rows.forEach((row) => seenNotificationIdsRef.current.add(row.id));
+        notificationsInitializedRef.current = true;
+        return;
+      }
+
+      const fresh = rows.filter((row) => !seenNotificationIdsRef.current.has(row.id));
+      if (!fresh.length) return;
+      fresh.forEach((row) => seenNotificationIdsRef.current.add(row.id));
+
+      const priority = fresh.find((row) => row.type === "dues") ?? fresh[0];
+      if (priority?.title && priority?.body) {
+        alertMessage(priority.title, priority.body);
+      }
+    } catch {
+      // no-op: notification failures should not block account rendering
+    }
+  }, [sessionUserId]);
+
+  useEffect(() => {
+    loadLinkedStudents();
+    loadNotifications();
+  }, [loadLinkedStudents, loadNotifications]);
+
+  useRealtimeRefresh({
+    name: "account-linked-data",
+    tables: [
+      "students",
+      "student_access",
+      "student_guardians",
+      "student_badges",
+      "badges",
+      "mamute_news"
+    ],
+    onRefresh: loadLinkedStudents,
+    enabled: Boolean(sessionUserId)
+  });
+
+  useRealtimeRefresh({
+    name: "account-notifications",
+    tables: ["notifications"],
+    onRefresh: loadNotifications,
+    enabled: Boolean(sessionUserId)
+  });
 
   const ensureSession = async () => {
     const { data: existing } = await supabase.auth.getSession();
@@ -105,8 +183,7 @@ export default function AccountScreen() {
     setLoading(true);
     setMessage(null);
     try {
-      const result = await verifyMobileEmail({ email: normalizedEmail });
-      setAvailableStudents(result.students);
+      await verifyMobileEmail({ email: normalizedEmail });
       setStep("students");
     } catch (error: any) {
       setMessage(formatAccountError(error, "Email was not found."));
@@ -143,13 +220,11 @@ export default function AccountScreen() {
         studentNumbers: verifyResult.students.map((student) => student.studentNumber)
       }, session.access_token);
 
-      const linked = await fetchLinkedStudents();
-      setLinkedStudents(linked);
+      await loadLinkedStudents();
 
       setMessage("App linked on this device.");
       setStep("email");
       setStudentNumbers([""]);
-      setAvailableStudents([]);
     } catch (error: any) {
       setMessage(formatAccountError(error, "Could not link app to student records."));
     } finally {
@@ -162,7 +237,8 @@ export default function AccountScreen() {
     setMessage("Device unlinked. You can link again anytime.");
     setStep("email");
     setStudentNumbers([""]);
-    setAvailableStudents([]);
+    seenNotificationIdsRef.current.clear();
+    notificationsInitializedRef.current = false;
   };
 
   const addStudentNumber = () => {
@@ -177,8 +253,18 @@ export default function AccountScreen() {
     return (
       <Screen>
         <HeroHeader title="Account" />
-        <Card>
-          <Text>App linked on this device.</Text>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingBottom: 110 }}
+        >
+          <Card style={styles.statusCard}>
+            <Text style={styles.statusTitle}>Device Linked</Text>
+            <Text style={styles.statusSubtitle}>
+              This device is currently linked to your account.
+            </Text>
+          </Card>
+
+          <SectionHeader title="Linked Students" subtitle="Membership and guardian details" />
           {linkedStudents.map((student) => {
             const standingView = classifyStanding(student.membershipStanding);
             const studentName = [student.firstName, student.lastName].filter(Boolean).join(" ");
@@ -186,24 +272,74 @@ export default function AccountScreen() {
               ? student.guardianNames.join(", ")
               : "None listed";
             return (
-              <Card key={student.studentId} style={{ marginTop: 8 }}>
+              <Card key={student.studentId} style={styles.studentCard}>
                 <Row>
-                  <Text style={{ fontWeight: "700" }}>{studentName || "Student"}</Text>
+                  <Text style={styles.studentName}>{studentName || "Student"}</Text>
                   <Badge tone={standingView.tone} label={standingView.label} />
                 </Row>
-                <Text style={{ color: uiColors.muted }}>Student #: {student.studentNumber}</Text>
-                <Text style={{ color: uiColors.muted }}>
+                <Text style={styles.studentMeta}>Student #: {student.studentNumber}</Text>
+                <Text style={styles.studentMeta}>
                   Membership: {formatMembershipType(student.membershipType)}
                 </Text>
-                <Text style={{ color: uiColors.muted }}>Guardian name(s): {guardians}</Text>
+                <Text style={styles.studentMeta}>Guardian name(s): {guardians}</Text>
               </Card>
             );
           })}
-          <Pressable onPress={unlinkDevice} style={[buttonStyle, { marginTop: 12 }]}>
-            <Text style={buttonTextStyle}>Break link on this device</Text>
-          </Pressable>
-          {message ? <Text style={{ color: "#fca5a5", marginTop: 10 }}>{message}</Text> : null}
-        </Card>
+
+          <SectionHeader
+            title="Badges Earned"
+            subtitle="Rewards unlocked through attendance and achievements"
+          />
+          {linkedStudents.map((student) => {
+            const studentName = [student.firstName, student.lastName].filter(Boolean).join(" ");
+            const badges = student.badges ?? [];
+            return (
+              <Card key={`badges-${student.studentId}`} style={styles.badgesCard}>
+                <Text style={styles.badgesStudentLabel}>
+                  {(studentName || "Student") + ` #${student.studentNumber}`}
+                </Text>
+                {badges.length ? (
+                  <View style={styles.badgeGrid}>
+                    {badges.map((badge) => {
+                      const imageSource = resolveBadgeImageSource(
+                        badge.imageUrl ?? null,
+                        badge.milestoneCount
+                      );
+                      return (
+                        <View key={badge.id} style={styles.badgeTile}>
+                          <View style={styles.badgeImageFrame}>
+                            {imageSource ? (
+                            <Image
+                              source={imageSource}
+                              style={styles.badgeImage}
+                              resizeMode="contain"
+                            />
+                          ) : (
+                            <Text style={styles.badgeFallbackIcon}>Award</Text>
+                          )}
+                          </View>
+                          <Text style={styles.badgeTitle} numberOfLines={2}>
+                            {badge.title}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                ) : (
+                  <Text style={styles.studentMeta}>No badges earned yet.</Text>
+                )}
+              </Card>
+            );
+          })}
+
+          <SectionHeader title="Device Link" subtitle="Manage connection on this phone" />
+          <Card>
+            <Pressable onPress={unlinkDevice} style={buttonStyle}>
+              <Text style={buttonTextStyle}>Break link on this device</Text>
+            </Pressable>
+            {message ? <Text style={styles.errorText}>{message}</Text> : null}
+          </Card>
+        </ScrollView>
       </Screen>
     );
   }
@@ -211,8 +347,12 @@ export default function AccountScreen() {
   return (
     <Screen>
       <HeroHeader title="Account" />
+      <SectionHeader
+        title="Link Mobile App"
+        subtitle="Connect this device to your student account"
+      />
       <Card>
-        <Text style={{ marginBottom: 8 }}>
+        <Text style={styles.linkLead}>
           Link this app using your email and linked student number(s).
         </Text>
 
@@ -234,14 +374,9 @@ export default function AccountScreen() {
 
         {step === "students" ? (
           <>
-            <Text style={{ marginTop: 8, marginBottom: 8 }}>
+            <Text style={styles.linkLead}>
               Enter student number(s) linked to this email.
             </Text>
-            {availableStudents.length ? (
-              <Text style={{ color: uiColors.muted, marginBottom: 8 }}>
-                Found in records: {availableStudents.map((student) => student.studentNumber).join(", ")}
-              </Text>
-            ) : null}
 
             {studentNumbers.map((value, index) => (
               <TextInput
@@ -269,11 +404,134 @@ export default function AccountScreen() {
           </>
         ) : null}
 
-        {message ? <Text style={{ color: "#fca5a5", marginTop: 10 }}>{message}</Text> : null}
+        {message ? <Text style={styles.errorText}>{message}</Text> : null}
       </Card>
     </Screen>
   );
 }
+
+function resolveBadgeImageSource(
+  imageUrl: string | null,
+  milestoneCount?: number | null
+): ImageSourcePropType | null {
+  if (typeof milestoneCount === "number" && milestoneBadgeImages[milestoneCount]) {
+    return milestoneBadgeImages[milestoneCount];
+  }
+  if (imageUrl) {
+    return { uri: imageUrl };
+  }
+  return null;
+}
+
+function SectionHeader({ title, subtitle }: { title: string; subtitle: string }) {
+  return (
+    <View style={styles.sectionHeaderWrap}>
+      <Text style={styles.sectionHeaderTitle}>{title}</Text>
+      <Text style={styles.sectionHeaderSubtitle}>{subtitle}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  statusCard: {
+    borderColor: "#3f0d14",
+    backgroundColor: "#21090d"
+  },
+  statusTitle: {
+    fontSize: 20,
+    fontWeight: "800",
+    letterSpacing: 0.3
+  },
+  statusSubtitle: {
+    color: "#fda4af",
+    fontWeight: "600"
+  },
+  sectionHeaderWrap: {
+    marginTop: 6,
+    marginBottom: 2,
+    borderLeftWidth: 4,
+    borderLeftColor: uiColors.accent,
+    paddingLeft: 10,
+    paddingVertical: 4
+  },
+  sectionHeaderTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    letterSpacing: 0.4
+  },
+  sectionHeaderSubtitle: {
+    color: uiColors.muted,
+    marginTop: 2
+  },
+  studentCard: {
+    marginTop: 8
+  },
+  studentName: {
+    fontWeight: "700",
+    fontSize: 16
+  },
+  studentMeta: {
+    color: uiColors.muted
+  },
+  badgesCard: {
+    marginTop: 8
+  },
+  badgesStudentLabel: {
+    fontWeight: "700",
+    marginBottom: 8
+  },
+  badgeGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10
+  },
+  badgeTile: {
+    width: "31%",
+    minWidth: 98,
+    backgroundColor: uiColors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: uiColors.border,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    gap: 8
+  },
+  badgeImageFrame: {
+    width: 76,
+    height: 76,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#4b5563",
+    backgroundColor: "#0f172a",
+    justifyContent: "center",
+    alignItems: "center",
+    overflow: "hidden"
+  },
+  badgeImage: {
+    width: "100%",
+    height: "100%"
+  },
+  badgeFallbackIcon: {
+    color: "#fbbf24",
+    fontWeight: "800",
+    fontSize: 12,
+    textAlign: "center"
+  },
+  badgeTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    textAlign: "center",
+    lineHeight: 16
+  },
+  linkLead: {
+    marginBottom: 8
+  },
+  errorText: {
+    color: "#fca5a5",
+    marginTop: 10
+  }
+});
 
 const inputStyle = {
   backgroundColor: uiColors.surfaceAlt,
@@ -308,4 +566,10 @@ function formatMembershipType(value?: string | null) {
     .split("-")
     .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
     .join(" ");
+}
+
+function alertMessage(title: string, body: string) {
+  const safeTitle = title || "Notification";
+  const safeBody = body || "";
+  Alert.alert(safeTitle, safeBody);
 }

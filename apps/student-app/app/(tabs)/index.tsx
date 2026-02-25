@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Pressable } from "react-native";
+import { Alert, Pressable, ScrollView, View } from "react-native";
 import * as Location from "expo-location";
 import { useFocusEffect } from "@react-navigation/native";
 import { Badge, Card, Row, Screen, Text, uiColors } from "@mamute/ui";
 import { HeroHeader } from "../../components/HeroHeader";
+import { useRealtimeRefresh } from "../../components/useRealtimeRefresh";
 import {
   fetchLinkedStudents,
   fetchSchedules,
@@ -16,6 +17,9 @@ import { gymMeta } from "@mamute/config";
 interface UpcomingClass extends ClassScheduleTemplate {
   deltaMinutes: number;
 }
+
+const CHECK_IN_LATE_LIMIT_MINUTES = -30;
+const CHECK_IN_FUTURE_LIMIT_MINUTES = 4 * 60;
 
 const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const shortWeekdayMap: Record<string, number> = {
@@ -32,20 +36,42 @@ export default function CheckInScreen() {
   const supabase = useMemo(() => getSupabaseClient(), []);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [students, setStudents] = useState<LinkedStudentSummary[]>([]);
+  const [selectedStudentNumbers, setSelectedStudentNumbers] = useState<number[]>([]);
   const [upcomingClasses, setUpcomingClasses] = useState<UpcomingClass[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeCheckIn, setActiveCheckIn] = useState<string | null>(null);
 
-  const studentNumbers = useMemo(
+  const linkedStudentNumbers = useMemo(
     () => students.map((student) => student.studentNumber),
     [students]
   );
+  const requiresSelection = students.length > 1;
+
+  useEffect(() => {
+    if (!students.length) {
+      setSelectedStudentNumbers([]);
+      return;
+    }
+
+    if (students.length === 1) {
+      setSelectedStudentNumbers([students[0].studentNumber]);
+      return;
+    }
+
+    setSelectedStudentNumbers((previous) => {
+      const allowed = new Set(students.map((student) => student.studentNumber));
+      return previous.filter((studentNumber) => allowed.has(studentNumber));
+    });
+  }, [students]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      const linkedPromise = sessionUserId
+        ? fetchLinkedStudents()
+        : Promise.resolve<LinkedStudentSummary[]>([]);
       const [linkedResult, schedulesResult] = await Promise.allSettled([
-        fetchLinkedStudents(),
+        linkedPromise,
         fetchSchedules({ includeCancelled: false })
       ]);
 
@@ -65,7 +91,7 @@ export default function CheckInScreen() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [sessionUserId]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -78,28 +104,43 @@ export default function CheckInScreen() {
   }, [supabase]);
 
   useEffect(() => {
-    if (!sessionUserId) {
-      setStudents([]);
-      return;
-    }
     load();
   }, [sessionUserId, load]);
 
   useFocusEffect(
     useCallback(() => {
-      if (sessionUserId) {
-        load();
-      }
+      load();
     }, [sessionUserId, load])
   );
 
+  useRealtimeRefresh({
+    name: "checkin",
+    tables: [
+      "class_schedules",
+      "students",
+      "student_access",
+      "student_badges",
+      "badges",
+      "mamute_news"
+    ],
+    onRefresh: load
+  });
+
   const handleCheckIn = async (classItem: UpcomingClass) => {
-    if (!canCheckInNow(classItem.deltaMinutes)) {
-      Alert.alert("Check-in unavailable", "Check-in opens 30 minutes before class start.");
+    if (!isCheckInTimeEligible(classItem.deltaMinutes)) {
+      Alert.alert(
+        "Check-in unavailable",
+        "Check-in is available from 4 hours before class start until 30 minutes after start."
+      );
       return;
     }
-    if (!studentNumbers.length) {
+    if (!linkedStudentNumbers.length) {
       Alert.alert("No students linked", "Link at least one student account first.");
+      return;
+    }
+
+    if (!selectedStudentNumbers.length) {
+      Alert.alert("Select students", "Choose at least one student to check in.");
       return;
     }
 
@@ -127,7 +168,8 @@ export default function CheckInScreen() {
       }
 
       const response = await recordAttendance({
-        studentNumbers,
+        studentNumbers: selectedStudentNumbers,
+        scheduleId: classItem.id,
         source: "mobile",
         locationVerified: true
       });
@@ -147,76 +189,132 @@ export default function CheckInScreen() {
     }
   };
 
+  const toggleStudentSelection = (studentNumber: number) => {
+    setSelectedStudentNumbers((previous) => {
+      if (previous.includes(studentNumber)) {
+        return previous.filter((value) => value !== studentNumber);
+      }
+      return [...previous, studentNumber];
+    });
+  };
+
   return (
     <Screen>
       <HeroHeader title="Check-In" />
-      <Card>
-        <Row>
-          <Text style={{ fontWeight: "700" }}>Linked Students</Text>
-          <Text style={{ color: uiColors.muted }}>{students.length}</Text>
-        </Row>
-        {students.length ? (
-          students.map((student) => {
-            const name = [student.firstName, student.lastName].filter(Boolean).join(" ");
-            return (
-              <Text key={student.studentId} style={{ color: uiColors.muted }}>
-                {name || "Student"} #{student.studentNumber}
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 120 }}
+      >
+        <Card>
+          <Row>
+            <Text style={{ fontWeight: "700" }}>Linked Students</Text>
+            <Text style={{ color: uiColors.muted }}>{students.length}</Text>
+          </Row>
+          {students.length ? (
+            students.map((student) => {
+              const name = [student.firstName, student.lastName].filter(Boolean).join(" ");
+              return (
+                <Text key={student.studentId} style={{ color: uiColors.muted }}>
+                  {name || "Student"} #{student.studentNumber}
+                </Text>
+              );
+            })
+          ) : (
+            <Text style={{ color: uiColors.muted }}>
+              No linked students found. Link from the Account tab.
+            </Text>
+          )}
+          {requiresSelection ? (
+            <>
+              <Text style={{ color: uiColors.muted, marginTop: 6 }}>
+                Select student(s) for check-in:
               </Text>
-            );
-          })
-        ) : (
-          <Text style={{ color: uiColors.muted }}>
-            No linked students found. Link from the Account tab.
-          </Text>
-        )}
-      </Card>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                {students.map((student) => {
+                  const selected = selectedStudentNumbers.includes(student.studentNumber);
+                  const label = [student.firstName, student.lastName]
+                    .filter(Boolean)
+                    .join(" ");
+                  return (
+                    <Pressable
+                      key={`select-${student.studentId}`}
+                      onPress={() => toggleStudentSelection(student.studentNumber)}
+                      style={[
+                        selectorPillStyle,
+                        selected ? selectorPillSelectedStyle : selectorPillUnselectedStyle
+                      ]}
+                    >
+                      <Text style={selected ? selectorTextSelectedStyle : selectorTextStyle}>
+                        {label || "Student"} #{student.studentNumber}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </>
+          ) : null}
+        </Card>
 
-      <Card>
-        <Row>
-          <Text style={{ fontWeight: "700" }}>Next 3 Classes</Text>
-          <Pressable onPress={load}>
-            <Text style={{ color: uiColors.accent }}>{loading ? "Refreshing..." : "Refresh"}</Text>
-          </Pressable>
-        </Row>
-        {upcomingClasses.length ? (
-          upcomingClasses.map((classItem) => {
-            const instructor = [classItem.instructorFirstName, classItem.instructorLastName]
-              .filter(Boolean)
-              .join(" ");
-            const canCheckIn = canCheckInNow(classItem.deltaMinutes);
-            return (
-              <Card key={classItem.id} style={{ marginTop: 8 }}>
-                <Row>
-                  <Text style={{ fontWeight: "700" }}>{formatClassType(classItem.classType)}</Text>
-                  <Badge
-                    tone={canCheckIn ? "success" : "warning"}
-                    label={canCheckIn ? "Check-in Open" : "Not Open"}
-                  />
-                </Row>
-                <Text style={{ color: uiColors.muted }}>
-                  {dayLabels[classItem.dayOfWeek]} {formatClockTime(classItem.startTime)} -{" "}
-                  {formatClockTime(classItem.endTime)}
-                </Text>
-                <Text style={{ color: uiColors.muted }}>
-                  {instructor ? `Instructor: ${instructor}` : "Instructor: TBD"}
-                </Text>
-                <Text style={{ color: uiColors.muted }}>{formatClassTiming(classItem.deltaMinutes)}</Text>
-                <Pressable
-                  disabled={!canCheckIn || !!activeCheckIn}
-                  onPress={() => handleCheckIn(classItem)}
-                  style={[buttonStyle, !canCheckIn || !!activeCheckIn ? buttonDisabledStyle : null]}
-                >
-                  <Text style={buttonTextStyle}>
-                    {activeCheckIn === classItem.id ? "Checking In..." : "Check In"}
+        <Card style={{ marginTop: 12 }}>
+          <Row>
+            <Text style={{ fontWeight: "700" }}>Next 3 Classes</Text>
+            <Pressable onPress={load}>
+              <Text style={{ color: uiColors.accent }}>{loading ? "Refreshing..." : "Refresh"}</Text>
+            </Pressable>
+          </Row>
+          {upcomingClasses.length ? (
+            upcomingClasses.map((classItem) => {
+              const instructor = [classItem.instructorFirstName, classItem.instructorLastName]
+                .filter(Boolean)
+                .join(" ");
+              const timeEligible = isCheckInTimeEligible(classItem.deltaMinutes);
+              const checkInDisabled =
+                !timeEligible || !selectedStudentNumbers.length || !!activeCheckIn;
+              const badgeTone = timeEligible
+                ? selectedStudentNumbers.length
+                  ? "success"
+                  : "warning"
+                : "warning";
+              const badgeLabel = timeEligible
+                ? selectedStudentNumbers.length
+                  ? classItem.deltaMinutes < 0
+                    ? "Late Check-in Open"
+                    : "Check-in Available"
+                  : requiresSelection
+                    ? "Select Student(s)"
+                    : "Link Account Required"
+                : "Check-in Closed";
+              return (
+                <Card key={classItem.id} style={{ marginTop: 8 }}>
+                  <Row>
+                    <Text style={{ fontWeight: "700" }}>{formatClassType(classItem.classType)}</Text>
+                    <Badge tone={badgeTone} label={badgeLabel} />
+                  </Row>
+                  <Text style={{ color: uiColors.muted }}>
+                    {dayLabels[classItem.dayOfWeek]} {formatClockTime(classItem.startTime)} -{" "}
+                    {formatClockTime(classItem.endTime)}
                   </Text>
-                </Pressable>
-              </Card>
-            );
-          })
-        ) : (
-          <Text style={{ color: uiColors.muted }}>No upcoming active classes found.</Text>
-        )}
-      </Card>
+                  <Text style={{ color: uiColors.muted }}>
+                    {instructor ? `Instructor: ${instructor}` : "Instructor: TBD"}
+                  </Text>
+                  <Text style={{ color: uiColors.muted }}>{formatClassTiming(classItem.deltaMinutes)}</Text>
+                  <Pressable
+                    disabled={checkInDisabled}
+                    onPress={() => handleCheckIn(classItem)}
+                    style={[buttonStyle, checkInDisabled ? buttonDisabledStyle : null]}
+                  >
+                    <Text style={buttonTextStyle}>
+                      {activeCheckIn === classItem.id ? "Checking In..." : "Check In"}
+                    </Text>
+                  </Pressable>
+                </Card>
+              );
+            })
+          ) : (
+            <Text style={{ color: uiColors.muted }}>No upcoming active classes found.</Text>
+          )}
+        </Card>
+      </ScrollView>
     </Screen>
   );
 }
@@ -244,6 +342,13 @@ function getUpcomingClasses(schedules: ClassScheduleTemplate[]) {
   return upcoming.slice(0, 3);
 }
 
+function isCheckInTimeEligible(deltaMinutes: number) {
+  return (
+    deltaMinutes >= CHECK_IN_LATE_LIMIT_MINUTES &&
+    deltaMinutes <= CHECK_IN_FUTURE_LIMIT_MINUTES
+  );
+}
+
 function getNowInTimezone(timezone: string) {
   const now = new Date();
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -262,10 +367,6 @@ function getNowInTimezone(timezone: string) {
     dayOfWeek: shortWeekdayMap[weekday] ?? 0,
     minutesOfDay: hour * 60 + minute
   };
-}
-
-function canCheckInNow(deltaMinutes: number) {
-  return deltaMinutes >= -30 && deltaMinutes <= 30;
 }
 
 function formatClassTiming(deltaMinutes: number) {
@@ -341,6 +442,32 @@ const buttonDisabledStyle = {
 };
 
 const buttonTextStyle = {
+  color: "#0b1220",
+  fontWeight: "700"
+};
+
+const selectorPillStyle = {
+  borderRadius: 999,
+  borderWidth: 1,
+  paddingHorizontal: 12,
+  paddingVertical: 8
+};
+
+const selectorPillSelectedStyle = {
+  backgroundColor: uiColors.accent,
+  borderColor: uiColors.accent
+};
+
+const selectorPillUnselectedStyle = {
+  backgroundColor: uiColors.surfaceAlt,
+  borderColor: uiColors.border
+};
+
+const selectorTextStyle = {
+  color: uiColors.text
+};
+
+const selectorTextSelectedStyle = {
   color: "#0b1220",
   fontWeight: "700"
 };

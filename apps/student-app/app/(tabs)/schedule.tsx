@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import { Badge, Card, Row, Screen, Text, uiColors } from "@mamute/ui";
 import { HeroHeader } from "../../components/HeroHeader";
+import { useRealtimeRefresh } from "../../components/useRealtimeRefresh";
 import { fetchSchedules } from "@mamute/api";
 import { ClassScheduleTemplate } from "@mamute/types";
 
@@ -43,6 +44,12 @@ export default function ScheduleScreen() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useRealtimeRefresh({
+    name: "schedule",
+    tables: ["class_schedules", "instructors"],
+    onRefresh: load
+  });
 
   return (
     <Screen>

@@ -16,6 +16,8 @@ import {
   VerifyStudentLinkResponse
 } from "@mamute/types";
 
+const BADGES_BUCKET = "mamute-badges";
+
 function resolveFunctionError(error: any, fallback: string): Error {
   const status = error?.context?.status;
   const body = error?.context?.body;
@@ -68,12 +70,17 @@ export async function linkStudentAccess(
 
 export async function fetchLinkedStudents(): Promise<LinkedStudentSummary[]> {
   const supabase = getSupabaseClient();
-  let { data, error } = await supabase
+  let data: any[] | null = null;
+  let error: any = null;
+
+  const primary = await supabase
     .from("student_access")
     .select(
-      "student_id, role, students:student_id(id, student_number, first_name, last_name, membership_type, membership_standing, barcode_value, student_guardians(guardian_first_name, guardian_last_name))"
+      "student_id, role, students:student_id(id, student_number, first_name, last_name, membership_type, membership_standing, barcode_value, student_guardians(guardian_first_name, guardian_last_name), student_badges(id, visibility, assigned_source, assigned_at, badges:badge_id(id, title, description, image_path, image_name, image_mime_type, milestone_count, created_at)))"
     )
     .order("created_at", { ascending: true });
+  data = (primary.data as any[] | null) ?? null;
+  error = primary.error;
 
   if (error) {
     const fallback = await supabase
@@ -82,7 +89,7 @@ export async function fetchLinkedStudents(): Promise<LinkedStudentSummary[]> {
         "student_id, role, students:student_id(id, student_number, first_name, last_name, membership_type, membership_standing, barcode_value)"
       )
       .order("created_at", { ascending: true });
-    data = fallback.data;
+    data = (fallback.data as any[] | null) ?? null;
     error = fallback.error;
   }
 
@@ -101,15 +108,51 @@ export async function fetchLinkedStudents(): Promise<LinkedStudentSummary[]> {
                 .join(" ")
                 .trim()
             )
-            .filter(Boolean)
+            .filter((name: string) => Boolean(name))
         )
       ];
+      const badgeRows = Array.isArray(row.students?.student_badges)
+        ? row.students.student_badges
+        : [];
+      const badges = badgeRows
+        .map((badgeRow: any) => {
+          const badge = badgeRow.badges ?? null;
+          if (!badge?.id) return null;
+          const imagePath = badge.image_path ?? null;
+          const imageUrl = imagePath
+            ? supabase.storage.from(BADGES_BUCKET).getPublicUrl(imagePath).data.publicUrl
+            : null;
+          return {
+            id: badgeRow.id,
+            badgeId: badge.id,
+            title: badge.title,
+            description: badge.description ?? null,
+            milestoneCount:
+              typeof badge.milestone_count === "number" ? badge.milestone_count : null,
+            imagePath,
+            imageName: badge.image_name ?? null,
+            imageMimeType: badge.image_mime_type ?? null,
+            imageUrl,
+            visibility: badgeRow.visibility ?? "public",
+            assignedSource: badgeRow.assigned_source ?? "manual",
+            assignedAt: badgeRow.assigned_at ?? badge.created_at
+          };
+        })
+        .filter(
+          (badge): badge is NonNullable<LinkedStudentSummary["badges"]>[number] =>
+            Boolean(badge)
+        )
+        .sort(
+          (a, b) =>
+            new Date(b.assignedAt).getTime() - new Date(a.assignedAt).getTime()
+        );
       return {
         studentId: row.students?.id ?? row.student_id,
         studentNumber: row.students?.student_number,
         firstName: row.students?.first_name,
         lastName: row.students?.last_name,
         guardianNames,
+        badges,
         membershipType: row.students?.membership_type,
         membershipStanding: row.students?.membership_standing,
         barcodeValue: row.students?.barcode_value ?? null
