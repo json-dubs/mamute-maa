@@ -1,6 +1,6 @@
 import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { createClient, Session } from "@supabase/supabase-js";
-import logo from "../../student-app/assets/images/MamuteLogo.png";
+import headerImage from "../../student-app/assets/images/MamuteLogoHeader.png";
 
 type CheckInResult = {
   student: {
@@ -210,6 +210,13 @@ export function App() {
   const [attendanceRows, setAttendanceRows] = useState<AttendanceRecord[]>([]);
   const [attendanceMessage, setAttendanceMessage] = useState<string | null>(null);
   const [isAttendanceLoading, setIsAttendanceLoading] = useState(false);
+  const [attendanceStartDate, setAttendanceStartDate] = useState(() =>
+    formatDateInput(getRelativeDate(-6))
+  );
+  const [attendanceEndDate, setAttendanceEndDate] = useState(() =>
+    formatDateInput(new Date())
+  );
+  const [attendanceReportLabel, setAttendanceReportLabel] = useState<string | null>(null);
 
   const [barcode, setBarcode] = useState("");
   const [selectedCheckinScheduleId, setSelectedCheckinScheduleId] = useState("");
@@ -574,7 +581,10 @@ export function App() {
       loadClassCatalog();
       loadScheduleExceptions();
       loadQualifications();
-      loadAttendance();
+      loadAttendance({
+        startDate: formatDateInput(getRelativeDate(-6)),
+        endDate: formatDateInput(new Date())
+      });
       loadAllGuardians();
       loadNews();
       loadBadges();
@@ -1149,24 +1159,311 @@ export function App() {
     }
   };
 
-  const loadAttendance = async () => {
+  const loadAttendance = async ({
+    startDate,
+    endDate,
+    limit
+  }: {
+    startDate?: string;
+    endDate?: string;
+    limit?: number;
+  } = {}) => {
     setAttendanceMessage(null);
     setIsAttendanceLoading(true);
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from("attendance")
         .select(
           "id, scanned_at, source, students:student_id(first_name, last_name, student_number), class_schedules:schedule_id(class_type, day_of_week, start_time)"
         )
-        .order("scanned_at", { ascending: false })
-        .limit(50);
+        .order("scanned_at", { ascending: false });
+
+      if (startDate) {
+        query = query.gte("scanned_at", toStartOfDayIso(startDate));
+      }
+
+      if (endDate) {
+        query = query.lt("scanned_at", toEndExclusiveIso(endDate));
+      }
+
+      if (limit) {
+        query = query.limit(limit);
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
       setAttendanceRows((data as unknown as AttendanceRecord[]) ?? []);
+      setAttendanceReportLabel(getAttendanceRangeLabel(startDate, endDate));
     } catch (error: any) {
       setAttendanceMessage(error?.message ?? "Failed to load attendance");
     } finally {
       setIsAttendanceLoading(false);
     }
+  };
+
+  const runAttendanceReport = async () => {
+    if (!attendanceStartDate || !attendanceEndDate) {
+      setAttendanceMessage("Select both a start date and end date.");
+      return;
+    }
+
+    if (attendanceStartDate > attendanceEndDate) {
+      setAttendanceMessage("Start date must be on or before end date.");
+      return;
+    }
+
+    await loadAttendance({
+      startDate: attendanceStartDate,
+      endDate: attendanceEndDate
+    });
+  };
+
+  const resetAttendanceReport = async () => {
+    const defaultStart = formatDateInput(getRelativeDate(-6));
+    const defaultEnd = formatDateInput(new Date());
+    setAttendanceStartDate(defaultStart);
+    setAttendanceEndDate(defaultEnd);
+    await loadAttendance({
+      startDate: defaultStart,
+      endDate: defaultEnd
+    });
+  };
+
+  const printAttendanceReport = () => {
+    if (!attendanceRows.length) {
+      setAttendanceMessage("Run a report with results before printing.");
+      return;
+    }
+
+    const summary = buildAttendanceSummary(attendanceRows);
+    const rowsHtml = attendanceRows
+      .map((row) => {
+        const student = Array.isArray(row.students) ? row.students[0] : row.students;
+        const schedule = Array.isArray(row.class_schedules)
+          ? row.class_schedules[0]
+          : row.class_schedules;
+        const studentDisplayName = student
+          ? [student.first_name, student.last_name].filter(Boolean).join(" ")
+          : "";
+        const studentLabel = student
+          ? `${escapeHtml(studentDisplayName || "Student")} (#${student.student_number})`
+          : "Unknown";
+        const classLabel = schedule
+          ? `${escapeHtml(dayOptions.find((d) => d.value === schedule.day_of_week)?.label ?? "")} ${escapeHtml(schedule.start_time)} - ${escapeHtml(formatDisplayLabel(schedule.class_type))}`
+          : "N/A";
+
+        return `<tr>
+          <td>${escapeHtml(new Date(row.scanned_at).toLocaleString())}</td>
+          <td>${studentLabel}</td>
+          <td>${classLabel}</td>
+          <td>${escapeHtml(capitalizeLabel(row.source))}</td>
+        </tr>`;
+      })
+      .join("");
+
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow?.document;
+    if (!doc || !iframe.contentWindow) {
+      document.body.removeChild(iframe);
+      setAttendanceMessage("Failed to open print preview.");
+      return;
+    }
+
+    doc.open();
+    doc.write(`
+      <html>
+        <head>
+          <title>Mamute Attendance Report</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              color: #111827;
+              margin: 32px;
+            }
+            h1 {
+              margin: 0 0 8px;
+              font-size: 28px;
+            }
+            p {
+              margin: 0 0 10px;
+              line-height: 1.4;
+            }
+            .meta {
+              color: #4b5563;
+              margin-bottom: 18px;
+            }
+            .summary {
+              display: flex;
+              gap: 18px;
+              flex-wrap: wrap;
+              margin: 18px 0 20px;
+            }
+            .summary-card {
+              border: 1px solid #d1d5db;
+              border-radius: 10px;
+              padding: 12px 14px;
+              min-width: 140px;
+            }
+            .summary-label {
+              display: block;
+              font-size: 12px;
+              color: #6b7280;
+              text-transform: uppercase;
+              letter-spacing: 0.06em;
+              margin-bottom: 4px;
+            }
+            .summary-value {
+              font-size: 24px;
+              font-weight: 700;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              margin-top: 12px;
+            }
+            th, td {
+              text-align: left;
+              border-bottom: 1px solid #e5e7eb;
+              padding: 10px 8px;
+              font-size: 13px;
+              vertical-align: top;
+            }
+            th {
+              color: #374151;
+              font-size: 12px;
+              text-transform: uppercase;
+              letter-spacing: 0.05em;
+            }
+          </style>
+        </head>
+        <body>
+          <h1>Mamute Attendance Report</h1>
+          <p class="meta">${escapeHtml(attendanceReportLabel ?? "Custom range")} | Generated ${escapeHtml(new Date().toLocaleString())}</p>
+          <div class="summary">
+            <div class="summary-card">
+              <span class="summary-label">Check-ins</span>
+              <span class="summary-value">${summary.totalCheckIns}</span>
+            </div>
+            <div class="summary-card">
+              <span class="summary-label">Students</span>
+              <span class="summary-value">${summary.uniqueStudents}</span>
+            </div>
+            <div class="summary-card">
+              <span class="summary-label">Classes</span>
+              <span class="summary-value">${summary.uniqueClasses}</span>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Student</th>
+                <th>Class</th>
+                <th>Source</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </body>
+      </html>
+    `);
+    doc.close();
+
+    iframe.onload = () => {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+      window.setTimeout(() => {
+        document.body.removeChild(iframe);
+      }, 1000);
+    };
+  };
+
+  const exportAttendanceReportCsv = () => {
+    if (!attendanceRows.length) {
+      setAttendanceMessage("Run a report with results before exporting.");
+      return;
+    }
+
+    const csvRows = attendanceRows.map((row) => {
+      const student = Array.isArray(row.students) ? row.students[0] : row.students;
+      const schedule = Array.isArray(row.class_schedules)
+        ? row.class_schedules[0]
+        : row.class_schedules;
+      const studentDisplayName = student
+        ? [student.first_name, student.last_name].filter(Boolean).join(" ")
+        : "";
+
+      return {
+        scannedAt: new Date(row.scanned_at).toLocaleString(),
+        studentName: studentDisplayName || "Student",
+        studentNumber: student?.student_number ? String(student.student_number) : "",
+        classDay: schedule
+          ? dayOptions.find((d) => d.value === schedule.day_of_week)?.label ?? ""
+          : "",
+        classTime: schedule?.start_time ?? "",
+        className: schedule ? formatDisplayLabel(schedule.class_type) : "",
+        source: capitalizeLabel(row.source)
+      };
+    });
+
+    const csv = [
+      [
+        "Report Range",
+        attendanceReportLabel ?? "Custom range"
+      ],
+      [
+        "Generated At",
+        new Date().toLocaleString()
+      ],
+      [],
+      [
+        "Check-ins",
+        String(attendanceSummary.totalCheckIns),
+        "Students",
+        String(attendanceSummary.uniqueStudents),
+        "Classes",
+        String(attendanceSummary.uniqueClasses)
+      ],
+      [],
+      [
+        "Scanned At",
+        "Student Name",
+        "Student Number",
+        "Class Day",
+        "Class Time",
+        "Class Name",
+        "Source"
+      ],
+      ...csvRows.map((row) => [
+        row.scannedAt,
+        row.studentName,
+        row.studentNumber,
+        row.classDay,
+        row.classTime,
+        row.className,
+        row.source
+      ])
+    ]
+      .map((row) => row.map(toCsvCell).join(","))
+      .join("\r\n");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `mamute-attendance-${attendanceStartDate || "start"}-to-${attendanceEndDate || "end"}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const sendOverduePushNotifications = async (studentId: string) => {
@@ -2093,6 +2390,11 @@ export function App() {
     ? supabase.storage.from(badgesBucket).getPublicUrl(previewBadge.image_path).data.publicUrl
     : null;
 
+  const attendanceSummary = useMemo(
+    () => buildAttendanceSummary(attendanceRows),
+    [attendanceRows]
+  );
+
   const isInstructorQualified = (
     instructorId: string,
     classType: string
@@ -2103,83 +2405,109 @@ export function App() {
     );
   };
 
-  return (
-    <div className="app">
-      <header className="header hero">
-        <div className="hero-content">
-          <div className="brand">
-            <img className="brand-logo" src={logo} alt="Mamute MAA logo" />
-            <div>
-              <h1 className="brand-title">Mamute MAA</h1>
-              <p className="brand-subtitle">Martial Arts Academy</p>
-            </div>
-          </div>
-          <p className="muted hero-copy">
-            Admin scheduling, profiles, and front desk check-in.
-          </p>
-        </div>
-        {session ? (
-          <button className="button secondary" onClick={signOut}>
-            Sign out
-          </button>
-        ) : null}
-      </header>
+  const showAuthView = !session || !isAdmin;
 
-      <section className="panel">
-        <h2>Admin Login</h2>
-        {session ? (
-          <p className="muted">Signed in as {session.user.email}</p>
-        ) : (
-          <form className="form" onSubmit={signIn}>
-            <label className="field">
-              <span>Email</span>
-              <input
-                className="input"
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="admin@mamutemaa.com"
-                required
-              />
-            </label>
-            <label className="field">
-              <span>Password</span>
-              <input
-                className="input"
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                placeholder="********"
-                required
-              />
-            </label>
-            <button className="button" type="submit">
-              Sign in
-            </button>
-            {authMessage ? <p className="error">{authMessage}</p> : null}
-          </form>
-        )}
-        {session && !isAdminLoading && !isAdmin ? (
-          <p className="error">
-            This account is not an admin. Sign out or contact the master admin.
-          </p>
-        ) : null}
-      </section>
+  return (
+    <div className={showAuthView ? "app auth-app" : "app"}>
+      {showAuthView ? (
+        <div className="auth-shell">
+          <header className="header hero auth-hero">
+            <div className="hero-content auth-hero-content">
+              <img className="brand-logo auth-brand-logo" src={headerImage} alt="Mamute header" />
+              <p className="muted hero-copy auth-copy">
+                Admin scheduling, profiles, front desk check-in, and membership operations.
+              </p>
+            </div>
+          </header>
+
+          <section className="panel auth-panel">
+            <div className="auth-panel-copy">
+              <p className="eyebrow">Admin Portal</p>
+              <h2>Sign In</h2>
+              <p className="muted">
+                Access scheduling, student records, attendance, news, and badge management.
+              </p>
+            </div>
+
+            {session ? (
+              <div className="auth-state">
+                <p className="muted">Signed in as {session.user.email}</p>
+                {isAdminLoading ? <p className="muted">Checking admin access...</p> : null}
+                {!isAdminLoading && !isAdmin ? (
+                  <p className="error">
+                    This account is not an admin. Sign out or contact the master admin.
+                  </p>
+                ) : null}
+                <button className="button secondary auth-secondary" type="button" onClick={signOut}>
+                  Sign out
+                </button>
+              </div>
+            ) : (
+              <form className="form auth-form" onSubmit={signIn}>
+                <label className="field">
+                  <span>Email</span>
+                  <input
+                    className="input"
+                    type="email"
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    placeholder="admin@mamutemaa.com"
+                    required
+                  />
+                </label>
+                <label className="field">
+                  <span>Password</span>
+                  <input
+                    className="input"
+                    type="password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    placeholder="Enter your password"
+                    required
+                  />
+                </label>
+                <button className="button auth-submit" type="submit">
+                  Sign in
+                </button>
+                {authMessage ? <p className="error">{authMessage}</p> : null}
+              </form>
+            )}
+          </section>
+        </div>
+      ) : null}
 
       {session && isAdmin ? (
         <>
-          <nav className="tabbar">
-            {adminTabs.map((tab) => (
-              <button
-                key={tab.id}
-                className={activeTab === tab.id ? "tabbar-button active" : "tabbar-button"}
-                type="button"
-                onClick={() => setActiveTab(tab.id)}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </nav>
+          <section className="admin-masthead">
+            <div className="admin-masthead-main">
+              <div className="admin-brand">
+                <img className="brand-logo admin-brand-logo" src={headerImage} alt="Mamute header" />
+                <div className="admin-brand-copy">
+                  <p className="eyebrow">Mamute Admin</p>
+                  <p className="muted hero-copy admin-hero-copy">
+                    Scheduling, profiles, attendance, and front desk operations.
+                  </p>
+                </div>
+              </div>
+              <div className="admin-masthead-actions">
+                <button className="button secondary" onClick={signOut}>
+                  Sign out
+                </button>
+              </div>
+            </div>
+            <nav className="tabbar app-tabbar">
+              {adminTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  className={activeTab === tab.id ? "tabbar-button active" : "tabbar-button"}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </nav>
+          </section>
 
           {activeTab === "settings" ? (
           <section className="panel">
@@ -3514,8 +3842,87 @@ export function App() {
 
           {activeTab === "attendance" ? (
           <section className="panel">
-            <h2>Attendance</h2>
-            <p className="muted">Most recent check-ins.</p>
+            <div className="section-header">
+              <div className="section-copy">
+                <h2>Attendance</h2>
+                <p className="muted">Run and print attendance reports by date range.</p>
+              </div>
+            </div>
+            <form
+              className="form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void runAttendanceReport();
+              }}
+            >
+              <label className="field">
+                <span>Start Date</span>
+                <input
+                  className="input"
+                  type="date"
+                  value={attendanceStartDate}
+                  onChange={(event) => setAttendanceStartDate(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>End Date</span>
+                <input
+                  className="input"
+                  type="date"
+                  value={attendanceEndDate}
+                  onChange={(event) => setAttendanceEndDate(event.target.value)}
+                />
+              </label>
+              <div className="form-actions">
+                <button className="button" type="submit" disabled={isAttendanceLoading}>
+                  {isAttendanceLoading ? "Running..." : "Run Report"}
+                </button>
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={() => void resetAttendanceReport()}
+                  disabled={isAttendanceLoading}
+                >
+                  Reset
+                </button>
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={printAttendanceReport}
+                  disabled={!attendanceRows.length}
+                >
+                  Print Report
+                </button>
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={exportAttendanceReportCsv}
+                  disabled={!attendanceRows.length}
+                >
+                  Export CSV
+                </button>
+              </div>
+            </form>
+            <div className="panel nested utility-panel">
+              <div className="report-summary-grid">
+                <div className="report-summary-card">
+                  <span className="report-summary-label">Range</span>
+                  <strong>{attendanceReportLabel ?? "Custom range"}</strong>
+                </div>
+                <div className="report-summary-card">
+                  <span className="report-summary-label">Check-ins</span>
+                  <strong>{attendanceSummary.totalCheckIns}</strong>
+                </div>
+                <div className="report-summary-card">
+                  <span className="report-summary-label">Students</span>
+                  <strong>{attendanceSummary.uniqueStudents}</strong>
+                </div>
+                <div className="report-summary-card">
+                  <span className="report-summary-label">Classes</span>
+                  <strong>{attendanceSummary.uniqueClasses}</strong>
+                </div>
+              </div>
+            </div>
             {attendanceMessage ? <p className="error">{attendanceMessage}</p> : null}
             {isAttendanceLoading ? <p className="muted">Loading attendance...</p> : null}
             {attendanceRows.length ? (
@@ -3582,6 +3989,86 @@ function calculateAgeFromBirthDate(birthDate: string | null | undefined) {
     age -= 1;
   }
   return age >= 0 ? age : null;
+}
+
+function buildAttendanceSummary(rows: AttendanceRecord[]) {
+  const uniqueStudents = new Set<string>();
+  const uniqueClasses = new Set<string>();
+
+  rows.forEach((row) => {
+    const student = Array.isArray(row.students) ? row.students[0] : row.students;
+    const schedule = Array.isArray(row.class_schedules)
+      ? row.class_schedules[0]
+      : row.class_schedules;
+
+    if (student?.student_number) {
+      uniqueStudents.add(String(student.student_number));
+    }
+
+    if (schedule) {
+      uniqueClasses.add(`${schedule.day_of_week}-${schedule.start_time}-${schedule.class_type}`);
+    }
+  });
+
+  return {
+    totalCheckIns: rows.length,
+    uniqueStudents: uniqueStudents.size,
+    uniqueClasses: uniqueClasses.size
+  };
+}
+
+function formatDateInput(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getRelativeDate(offsetDays: number) {
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  return date;
+}
+
+function toStartOfDayIso(dateString: string) {
+  return new Date(`${dateString}T00:00:00`).toISOString();
+}
+
+function toEndExclusiveIso(dateString: string) {
+  const end = new Date(`${dateString}T00:00:00`);
+  end.setDate(end.getDate() + 1);
+  return end.toISOString();
+}
+
+function getAttendanceRangeLabel(startDate?: string, endDate?: string) {
+  if (startDate && endDate) {
+    return `${startDate} to ${endDate}`;
+  }
+  if (startDate) {
+    return `From ${startDate}`;
+  }
+  if (endDate) {
+    return `Through ${endDate}`;
+  }
+  return "Most recent attendance";
+}
+
+function capitalizeLabel(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function toCsvCell(value: string) {
+  const normalized = value.replaceAll('"', '""');
+  return `"${normalized}"`;
 }
 
 function getClassColor(className: string) {
