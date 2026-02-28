@@ -275,6 +275,7 @@ export function App() {
   const [editingClassId, setEditingClassId] = useState<string | null>(null);
   const [editingClassName, setEditingClassName] = useState("");
   const [scheduleDragPayload, setScheduleDragPayload] = useState<ScheduleDragPayload>(null);
+  const [selectedSchedulePayload, setSelectedSchedulePayload] = useState<ScheduleDragPayload>(null);
   const [newsPosts, setNewsPosts] = useState<MamuteNewsRecord[]>([]);
   const [newsTitle, setNewsTitle] = useState("");
   const [newsDescription, setNewsDescription] = useState("");
@@ -409,6 +410,7 @@ export function App() {
     setDraftSchedules(schedules.map((item) => ({ ...item })));
     setDraftScheduleExceptions(scheduleExceptions.map((item) => ({ ...item })));
     setScheduleDragPayload(null);
+    setSelectedSchedulePayload(null);
     setIsScheduleEditing(true);
   };
 
@@ -417,6 +419,7 @@ export function App() {
     setDraftScheduleExceptions([]);
     setSchedulesMessage(null);
     setScheduleDragPayload(null);
+    setSelectedSchedulePayload(null);
     setIsScheduleEditing(false);
   };
 
@@ -523,6 +526,7 @@ export function App() {
       setDraftSchedules([]);
       setDraftScheduleExceptions([]);
       setScheduleDragPayload(null);
+      setSelectedSchedulePayload(null);
       setIsScheduleEditing(false);
     } catch (error: any) {
       setSchedulesMessage(error?.message ?? "Failed to save schedule changes");
@@ -1837,6 +1841,23 @@ export function App() {
     setScheduleDragPayload(null);
   };
 
+  const applySchedulePayload = (
+    dayOfWeek: number,
+    hour: number,
+    payload: NonNullable<ScheduleDragPayload>
+  ) => {
+    if (payload.type === "class") {
+      void handleDropSchedule(
+        dayOfWeek,
+        hour,
+        payload.value as ClassScheduleRecord["class_type"]
+      );
+    }
+    if (payload.type === "instructor") {
+      void handleDropInstructor(dayOfWeek, hour, payload.value);
+    }
+  };
+
   const readScheduleDragPayload = (
     event: DragEvent<HTMLDivElement>
   ): NonNullable<ScheduleDragPayload> | null => {
@@ -2346,7 +2367,12 @@ export function App() {
                   {paletteClasses.map((item) => (
                     <div
                       key={item.id}
-                      className="chip draggable"
+                      className={`chip draggable${
+                        selectedSchedulePayload?.type === "class" &&
+                        selectedSchedulePayload.value === item.name
+                          ? " active"
+                          : ""
+                      }`}
                       draggable={isScheduleEditing}
                       onDragStart={(event) =>
                         handleScheduleDragStart(event, {
@@ -2355,9 +2381,26 @@ export function App() {
                         })
                       }
                       onDragEnd={clearScheduleDragPayload}
+                      onClick={() => {
+                        if (!isScheduleEditing) return;
+                        setSelectedSchedulePayload((current) =>
+                          current?.type === "class" && current.value === item.name
+                            ? null
+                            : { type: "class", value: item.name }
+                        );
+                      }}
                       style={{
                         backgroundColor: getClassColor(item.name),
-                        borderColor: "transparent"
+                        borderColor:
+                          selectedSchedulePayload?.type === "class" &&
+                          selectedSchedulePayload.value === item.name
+                            ? "#f5f5f5"
+                            : "transparent",
+                        boxShadow:
+                          selectedSchedulePayload?.type === "class" &&
+                          selectedSchedulePayload.value === item.name
+                            ? "0 0 0 2px rgba(255,255,255,0.15)"
+                            : "none"
                       }}
                     >
                       <span>{item.name}</span>
@@ -2395,7 +2438,12 @@ export function App() {
                 {instructors.map((instructor) => (
                   <div
                     key={instructor.id}
-                    className="chip draggable"
+                    className={`chip draggable${
+                      selectedSchedulePayload?.type === "instructor" &&
+                      selectedSchedulePayload.value === instructor.id
+                        ? " active"
+                        : ""
+                    }`}
                     draggable={isScheduleEditing}
                     onDragStart={(event) =>
                       handleScheduleDragStart(event, {
@@ -2404,6 +2452,14 @@ export function App() {
                       })
                     }
                     onDragEnd={clearScheduleDragPayload}
+                    onClick={() => {
+                      if (!isScheduleEditing) return;
+                      setSelectedSchedulePayload((current) =>
+                        current?.type === "instructor" && current.value === instructor.id
+                          ? null
+                          : { type: "instructor", value: instructor.id }
+                      );
+                    }}
                   >
                     {getInstructorLabel(instructor)}
                   </div>
@@ -2449,16 +2505,11 @@ export function App() {
                             const payload = readScheduleDragPayload(event);
                             clearScheduleDragPayload();
                             if (!payload) return;
-                            if (payload.type === "class") {
-                              void handleDropSchedule(
-                                day.value,
-                                hour,
-                                payload.value as ClassScheduleRecord["class_type"]
-                              );
-                            }
-                            if (payload.type === "instructor") {
-                              void handleDropInstructor(day.value, hour, payload.value);
-                            }
+                            applySchedulePayload(day.value, hour, payload);
+                          }}
+                          onClick={() => {
+                            if (!isScheduleEditing || !selectedSchedulePayload) return;
+                            applySchedulePayload(day.value, hour, selectedSchedulePayload);
                           }}
                         >
                         {slot ? (
