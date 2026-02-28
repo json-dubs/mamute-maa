@@ -1,17 +1,12 @@
-type EnvGetter = (key: string) => string | undefined;
-
-const getEnvValue: EnvGetter = (key) =>
-  typeof process !== "undefined" && process.env ? process.env[key] : undefined;
-
 export function getSupabaseConfig() {
   const url =
-    getEnvValue("EXPO_PUBLIC_SUPABASE_URL") ||
-    getEnvValue("NEXT_PUBLIC_SUPABASE_URL") ||
-    getEnvValue("SUPABASE_URL");
+    process.env.EXPO_PUBLIC_SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.SUPABASE_URL;
   const anonKey =
-    getEnvValue("EXPO_PUBLIC_SUPABASE_ANON_KEY") ||
-    getEnvValue("NEXT_PUBLIC_SUPABASE_ANON_KEY") ||
-    getEnvValue("SUPABASE_ANON_KEY");
+    process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_ANON_KEY;
 
   if (!url || !anonKey) {
     console.warn(

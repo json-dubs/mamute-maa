@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2.0.0",
-  "productName": "Mamute Admin",
+  "productName": "Mamute",
   "version": "0.1.0",
   "identifier": "com.mamute.admin",
   "build": {
@@ -12,13 +12,24 @@
   "app": {
     "windows": [
       {
-        "title": "Mamute Admin",
+        "title": "Mamute",
         "width": 1200,
         "height": 800
       }
     ]
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "targets": [
+      "nsis",
+      "msi"
+    ]
   }
 }

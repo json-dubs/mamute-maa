@@ -1,5 +1,5 @@
 [package]
-name = "admin-desktop"
+name = "mamute"
 version = "0.1.0"
 description = "Mamute MAA Admin Desktop"
 authors = ["Mamute"]

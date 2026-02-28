@@ -167,6 +167,27 @@ const dayOptions = [
 const newsBucket = "mamute-news";
 const badgesBucket = "mamute-badges";
 
+type AdminTab =
+  | "frontdesk"
+  | "students"
+  | "instructors"
+  | "classes"
+  | "news"
+  | "badges"
+  | "attendance"
+  | "settings";
+
+const adminTabs: { id: AdminTab; label: string }[] = [
+  { id: "frontdesk", label: "Front Desk" },
+  { id: "students", label: "Students" },
+  { id: "instructors", label: "Instructors" },
+  { id: "classes", label: "Classes" },
+  { id: "news", label: "Mamute News" },
+  { id: "badges", label: "Badges" },
+  { id: "attendance", label: "Attendance" },
+  { id: "settings", label: "Settings" }
+];
+
 export function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -258,6 +279,8 @@ export function App() {
   const [badgeTitle, setBadgeTitle] = useState("");
   const [badgeDescription, setBadgeDescription] = useState("");
   const [badgeImage, setBadgeImage] = useState<File | null>(null);
+  const [editingBadgeId, setEditingBadgeId] = useState<string | null>(null);
+  const [previewBadge, setPreviewBadge] = useState<BadgeRecord | null>(null);
   const [selectedBadgeId, setSelectedBadgeId] = useState("");
   const [badgeAssignVisibility, setBadgeAssignVisibility] = useState<"private" | "public">(
     "private"
@@ -268,6 +291,7 @@ export function App() {
   const [isBadgesLoading, setIsBadgesLoading] = useState(false);
   const [isBadgeSaving, setIsBadgeSaving] = useState(false);
   const [isBadgeAssigning, setIsBadgeAssigning] = useState(false);
+  const [activeTab, setActiveTab] = useState<AdminTab>("frontdesk");
 
   const supabase = useMemo(() => {
     const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -1291,6 +1315,62 @@ export function App() {
     setBadgeImage(file);
   };
 
+  const resetBadgeForm = () => {
+    setEditingBadgeId(null);
+    setBadgeTitle("");
+    setBadgeDescription("");
+    setBadgeImage(null);
+    const fileInput = document.getElementById("mamute-badge-image") as
+      | HTMLInputElement
+      | null;
+    if (fileInput) fileInput.value = "";
+  };
+
+  const startEditBadge = (badge: BadgeRecord) => {
+    setEditingBadgeId(badge.id);
+    setBadgeTitle(badge.title);
+    setBadgeDescription(badge.description ?? "");
+    setBadgeImage(null);
+    const fileInput = document.getElementById("mamute-badge-image") as
+      | HTMLInputElement
+      | null;
+    if (fileInput) fileInput.value = "";
+  };
+
+  const deleteBadge = async (badge: BadgeRecord) => {
+    if (!session) return;
+    if (badge.milestone_count !== null) {
+      setBadgesMessage("Automatic milestone badges are managed by the system and cannot be deleted here.");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Delete the "${badge.title}" badge? This also removes its student badge assignments.`
+    );
+    if (!confirmed) return;
+
+    setBadgesMessage(null);
+    try {
+      if (badge.image_path) {
+        await supabase.storage.from(badgesBucket).remove([badge.image_path]);
+      }
+      const { error } = await supabase.from("badges").delete().eq("id", badge.id);
+      if (error) throw error;
+
+      if (selectedBadgeId === badge.id) {
+        setSelectedBadgeId("");
+      }
+      if (editingBadgeId === badge.id) {
+        resetBadgeForm();
+      }
+      if (previewBadge?.id === badge.id) {
+        setPreviewBadge(null);
+      }
+      await loadBadges();
+    } catch (error: any) {
+      setBadgesMessage(error?.message ?? "Failed to delete badge");
+    }
+  };
+
   const submitBadge = async (event: FormEvent) => {
     event.preventDefault();
     if (!session) {
@@ -1307,9 +1387,13 @@ export function App() {
     setIsBadgeSaving(true);
     setBadgesMessage(null);
 
-    let imagePath: string | null = null;
-    let imageName: string | null = null;
-    let imageMimeType: string | null = null;
+    const existingBadge = editingBadgeId
+      ? badges.find((item) => item.id === editingBadgeId) ?? null
+      : null;
+    let imagePath: string | null = existingBadge?.image_path ?? null;
+    let imageName: string | null = existingBadge?.image_name ?? null;
+    let imageMimeType: string | null = existingBadge?.image_mime_type ?? null;
+    let uploadedReplacementPath: string | null = null;
 
     try {
       if (badgeImage) {
@@ -1326,30 +1410,45 @@ export function App() {
           });
         if (uploadError) throw uploadError;
         imagePath = path;
+        uploadedReplacementPath = path;
         imageName = badgeImage.name;
         imageMimeType = badgeImage.type || null;
       }
 
-      const { error } = await supabase.from("badges").insert({
+      const payload = {
         title,
         description: badgeDescription.trim() || null,
         image_path: imagePath,
         image_name: imageName,
-        image_mime_type: imageMimeType,
-        created_by: session.user.id
-      });
+        image_mime_type: imageMimeType
+      };
+
+      const { error } = editingBadgeId
+        ? await supabase.from("badges").update(payload).eq("id", editingBadgeId)
+        : await supabase.from("badges").insert({
+            ...payload,
+            created_by: session.user.id
+          });
       if (error) throw error;
 
-      setBadgeTitle("");
-      setBadgeDescription("");
-      setBadgeImage(null);
-      const fileInput = document.getElementById("mamute-badge-image") as
-        | HTMLInputElement
-        | null;
-      if (fileInput) fileInput.value = "";
+      if (
+        editingBadgeId &&
+        uploadedReplacementPath &&
+        existingBadge?.image_path &&
+        existingBadge.image_path !== uploadedReplacementPath
+      ) {
+        await supabase.storage.from(badgesBucket).remove([existingBadge.image_path]);
+      }
+
+      resetBadgeForm();
       await loadBadges();
     } catch (error: any) {
-      setBadgesMessage(error?.message ?? "Failed to create badge");
+      if (uploadedReplacementPath) {
+        await supabase.storage.from(badgesBucket).remove([uploadedReplacementPath]);
+      }
+      setBadgesMessage(
+        error?.message ?? (editingBadgeId ? "Failed to update badge" : "Failed to create badge")
+      );
     } finally {
       setIsBadgeSaving(false);
     }
@@ -1913,6 +2012,10 @@ export function App() {
     );
   });
 
+  const previewBadgeUrl = previewBadge?.image_path
+    ? supabase.storage.from(badgesBucket).getPublicUrl(previewBadge.image_path).data.publicUrl
+    : null;
+
   const isInstructorQualified = (
     instructorId: string,
     classType: string
@@ -1988,6 +2091,20 @@ export function App() {
 
       {session && isAdmin ? (
         <>
+          <nav className="tabbar">
+            {adminTabs.map((tab) => (
+              <button
+                key={tab.id}
+                className={activeTab === tab.id ? "tabbar-button active" : "tabbar-button"}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+
+          {activeTab === "settings" ? (
           <section className="panel">
             <h2>Admin Accounts</h2>
             <p className="muted">
@@ -2033,6 +2150,8 @@ export function App() {
             </form>
             {adminCreateMessage ? <p className="muted">{adminCreateMessage}</p> : null}
           </section>
+          ) : null}
+          {activeTab === "frontdesk" ? (
           <section className="panel">
             <h2>Front Desk Check-in</h2>
             <form className="form" onSubmit={submitCheckin}>
@@ -2101,7 +2220,9 @@ export function App() {
               </div>
             ) : null}
           </section>
+          ) : null}
 
+          {activeTab === "classes" ? (
           <section className="panel">
             <h2>Classes</h2>
             <p className="muted">
@@ -2328,7 +2449,9 @@ export function App() {
               </div>
             </div>
           </section>
+          ) : null}
 
+          {activeTab === "news" ? (
           <section className="panel">
             <h2>Mamute News</h2>
             <p className="muted">
@@ -2435,7 +2558,9 @@ export function App() {
               <p className="muted">No news posts yet.</p>
             )}
           </section>
+          ) : null}
 
+          {activeTab === "badges" ? (
           <section className="panel">
             <h2>Badges</h2>
             <p className="muted">
@@ -2444,7 +2569,7 @@ export function App() {
             </p>
 
             <div className="panel nested">
-              <h3>Create Badge</h3>
+              <h3>{editingBadgeId ? "Edit Badge" : "Create Badge"}</h3>
               <form className="form" onSubmit={submitBadge}>
                 <label className="field">
                   <span>Title</span>
@@ -2480,12 +2605,66 @@ export function App() {
                   />
                   {badgeImage ? (
                     <span className="helper">Selected: {badgeImage.name}</span>
+                  ) : editingBadgeId ? (
+                    <span className="helper">Keep current file or choose a replacement.</span>
                   ) : null}
                 </label>
+                {editingBadgeId ? (
+                  <div className="field">
+                    <span>Current Image</span>
+                    {(() => {
+                      const currentBadge = badges.find((item) => item.id === editingBadgeId);
+                      if (!currentBadge?.image_path) {
+                        return <span className="helper">No image attached.</span>;
+                      }
+                      const currentImageUrl = supabase.storage
+                        .from(badgesBucket)
+                        .getPublicUrl(currentBadge.image_path).data.publicUrl;
+                      const isImage = (currentBadge.image_mime_type ?? "").startsWith("image/");
+                      return (
+                        <div className="badge-file-preview">
+                          {isImage ? (
+                            <img
+                              className="badge-thumb"
+                              src={currentImageUrl}
+                              alt={currentBadge.title}
+                            />
+                          ) : null}
+                          <div className="badge-file-meta">
+                            <span className="helper">{currentBadge.image_name ?? "Stored file"}</span>
+                            <button
+                              className="button secondary"
+                              type="button"
+                              onClick={() => setPreviewBadge(currentBadge)}
+                            >
+                              Preview File
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                ) : null}
                 <div className="form-actions">
                   <button className="button" type="submit" disabled={!session || isBadgeSaving}>
-                    {isBadgeSaving ? "Creating..." : "Create Badge"}
+                    {isBadgeSaving
+                      ? editingBadgeId
+                        ? "Saving..."
+                        : "Creating..."
+                      : editingBadgeId
+                        ? "Save Badge"
+                        : "Create Badge"}
                   </button>
+                  {editingBadgeId ? (
+                    <button
+                      className="button secondary"
+                      type="button"
+                      onClick={resetBadgeForm}
+                      disabled={isBadgeSaving}
+                    >
+                      Cancel
+                    </button>
+                  ) : null}
                 </div>
               </form>
               {isBadgesLoading ? <p className="muted">Loading badges...</p> : null}
@@ -2499,6 +2678,7 @@ export function App() {
                         <th>Milestone</th>
                         <th>Image</th>
                         <th>Created</th>
+                        <th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2507,8 +2687,57 @@ export function App() {
                           <td>{badge.title}</td>
                           <td>{badge.description ?? "-"}</td>
                           <td>{badge.milestone_count ?? "-"}</td>
-                          <td>{badge.image_name ?? "-"}</td>
+                          <td>
+                            {badge.image_path ? (
+                              <div className="badge-file-preview compact">
+                                {(badge.image_mime_type ?? "").startsWith("image/") ? (
+                                  <img
+                                    className="badge-thumb compact"
+                                    src={
+                                      supabase.storage.from(badgesBucket).getPublicUrl(badge.image_path)
+                                        .data.publicUrl
+                                    }
+                                    alt={badge.title}
+                                  />
+                                ) : null}
+                                <div className="badge-file-meta">
+                                  <span className="helper">{badge.image_name ?? "Stored file"}</span>
+                                  <button
+                                    className="button secondary"
+                                    type="button"
+                                    onClick={() => setPreviewBadge(badge)}
+                                  >
+                                    Preview
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              "-"
+                            )}
+                          </td>
                           <td>{new Date(badge.created_at).toLocaleString()}</td>
+                          <td>
+                            {badge.milestone_count === null ? (
+                              <div className="row-actions">
+                                <button
+                                  className="button secondary"
+                                  type="button"
+                                  onClick={() => startEditBadge(badge)}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  className="button secondary"
+                                  type="button"
+                                  onClick={() => void deleteBadge(badge)}
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="helper">Automatic milestone badge</span>
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -2600,13 +2829,47 @@ export function App() {
               </form>
             </div>
             {badgesMessage ? <p className="error">{badgesMessage}</p> : null}
+            {previewBadge ? (
+              <div className="modal-backdrop" onClick={() => setPreviewBadge(null)}>
+                <div className="modal-panel" onClick={(event) => event.stopPropagation()}>
+                  <div className="modal-header">
+                    <div>
+                      <h3>{previewBadge.title}</h3>
+                      <p className="muted">{previewBadge.image_name ?? "Stored file"}</p>
+                    </div>
+                    <button
+                      className="button secondary"
+                      type="button"
+                      onClick={() => setPreviewBadge(null)}
+                    >
+                      Close
+                    </button>
+                  </div>
+                  {previewBadgeUrl && (previewBadge.image_mime_type ?? "").startsWith("image/") ? (
+                    <img className="badge-preview-image" src={previewBadgeUrl} alt={previewBadge.title} />
+                  ) : previewBadgeUrl ? (
+                    <iframe
+                      className="badge-preview-frame"
+                      src={previewBadgeUrl}
+                      title={previewBadge.title}
+                    />
+                  ) : (
+                    <p className="muted">No preview available for this badge.</p>
+                  )}
+                </div>
+              </div>
+            ) : null}
           </section>
+          ) : null}
 
+          {activeTab === "students" ? (
           <section className="panel">
-            <div>
+            <div className="section-header">
+          <div className="section-copy">
           <h2>Students</h2>
           <p className="muted">Create, edit, and manage student profiles.</p>
-          <label className="field">
+          </div>
+          <label className="field section-search">
             <span>Search</span>
             <input
               className="input"
@@ -2616,26 +2879,33 @@ export function App() {
               disabled={!session}
             />
           </label>
-          <label className="field">
-            <span>Paste CSV (optional)</span>
-            <textarea
-              className="input"
-              rows={4}
-              value={csvInput}
-              onChange={(event) => setCsvInput(event.target.value)}
-              placeholder="student_number,first_name,last_name,birth_date,email,membership_type,membership_standing,guardian_first_name,guardian_last_name,guardian_email"
-              disabled={!session || isCsvImporting}
-            />
-          </label>
-          <div className="form-actions">
-            <button
-              className="button secondary"
-              type="button"
-              onClick={importStudentsCsv}
-              disabled={!session || isCsvImporting}
-            >
-              {isCsvImporting ? "Importing..." : "Import CSV"}
-            </button>
+          </div>
+          <div className="panel nested utility-panel">
+            <h3>Import Utilities</h3>
+            <p className="muted">
+              Use CSV import for bulk student creation. Keep day-to-day edits in the main form below.
+            </p>
+            <label className="field utility-field">
+              <span>Paste CSV</span>
+              <textarea
+                className="input"
+                rows={4}
+                value={csvInput}
+                onChange={(event) => setCsvInput(event.target.value)}
+                placeholder="student_number,first_name,last_name,birth_date,email,membership_type,membership_standing,guardian_first_name,guardian_last_name,guardian_email"
+                disabled={!session || isCsvImporting}
+              />
+            </label>
+            <div className="form-actions">
+              <button
+                className="button secondary"
+                type="button"
+                onClick={importStudentsCsv}
+                disabled={!session || isCsvImporting}
+              >
+                {isCsvImporting ? "Importing..." : "Import CSV"}
+              </button>
+            </div>
           </div>
           <form className="form" onSubmit={submitStudent}>
             <label className="field">
@@ -2965,9 +3235,10 @@ export function App() {
           ) : (
             <p className="muted">No students yet.</p>
           )}
-            </div>
           </section>
+          ) : null}
 
+          {activeTab === "instructors" ? (
           <section className="panel">
             <div>
           <h2>Instructors</h2>
@@ -3124,7 +3395,9 @@ export function App() {
           </div>
             </div>
           </section>
+          ) : null}
 
+          {activeTab === "attendance" ? (
           <section className="panel">
             <h2>Attendance</h2>
             <p className="muted">Most recent check-ins.</p>
@@ -3174,6 +3447,7 @@ export function App() {
               <p className="muted">No attendance yet.</p>
             )}
           </section>
+          ) : null}
         </>
       ) : null}
     </div>

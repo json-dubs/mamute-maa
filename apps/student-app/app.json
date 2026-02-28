@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "student-app",
+    "name": "Mamute",
     "slug": "student-app",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -20,11 +20,14 @@
       }
     },
     "android": {
+      "package": "com.jsondubs.mamutestudent",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#ffffff"
       },
-      "permissions": ["ACCESS_FINE_LOCATION"],
+      "permissions": [
+        "ACCESS_FINE_LOCATION"
+      ],
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
     },
@@ -38,6 +41,13 @@
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "31db843f-9e14-4588-82a0-d2f40f2e0f46"
+      }
+    },
+    "owner": "jsondubs"
   }
 }

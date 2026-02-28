@@ -5,6 +5,9 @@ node_modules
 .turbo
 dist
 build
+apps/admin-desktop/src-tauri/target
+apps/admin-desktop/src-tauri/gen
+*.tsbuildinfo
 .DS_Store
 npm-debug.log*
 *.log
