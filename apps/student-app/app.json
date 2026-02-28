@@ -37,6 +37,14 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/notification-icon.png",
+          "color": "#e11d2e",
+          "defaultChannel": "general"
+        }
+      ],
       "expo-router"
     ],
     "experiments": {

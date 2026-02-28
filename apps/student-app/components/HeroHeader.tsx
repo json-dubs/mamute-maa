@@ -1,12 +1,12 @@
 import { Image, View } from "react-native";
 import { Text, uiColors } from "@mamute/ui";
 
-const logo = require("../assets/images/MamuteLogo.png");
+const headerImage = require("../assets/images/MamuteLogoHeader.png");
 
 export function HeroHeader({ title }: { title?: string }) {
   return (
     <View style={styles.container}>
-      <Image source={logo} style={styles.logo} resizeMode="contain" />
+      <Image source={headerImage} style={styles.headerImage} resizeMode="contain" />
       <Text style={styles.name}>Mamute Martial Arts Academy</Text>
       {title ? <Text style={styles.title}>{title}</Text> : null}
     </View>
@@ -18,12 +18,12 @@ const styles = {
     alignItems: "center",
     marginBottom: 8
   },
-  logo: {
-    width: 88,
-    height: 88
+  headerImage: {
+    width: 240,
+    height: 72
   },
   name: {
-    marginTop: 8,
+    marginTop: 10,
     fontSize: 16,
     fontWeight: "700",
     color: uiColors.text,
