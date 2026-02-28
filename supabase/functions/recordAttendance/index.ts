@@ -35,6 +35,8 @@ interface ScheduleRow {
 const DEFAULT_TIMEZONE = "America/Toronto";
 const MOBILE_LATE_CHECKIN_LIMIT_MINUTES = -30;
 const MOBILE_EARLY_CHECKIN_LIMIT_MINUTES = 4 * 60;
+const FRONTDESK_LATE_CHECKIN_LIMIT_MINUTES = -30;
+const FRONTDESK_EARLY_CHECKIN_LIMIT_MINUTES = 4 * 60;
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -136,12 +138,26 @@ Deno.serve(async (req) => {
         schedule = eligible[0];
       }
     } else {
-      schedule = await findFrontdeskSchedule(supabase, timezone);
-      if (!schedule) {
+      const eligible = await findFrontdeskEligibleSchedules(supabase);
+      if (!eligible.length) {
         return Response.json(
           { error: "NO_CLASS_AVAILABLE" },
           { status: 404, headers: corsHeaders }
         );
+      }
+      if (payload.scheduleId) {
+        schedule = eligible.find((item) => item.id === payload.scheduleId) ?? null;
+        if (!schedule) {
+          return Response.json(
+            {
+              error: "SCHEDULE_NOT_ELIGIBLE",
+              eligibleScheduleIds: eligible.map((item) => item.id)
+            },
+            { status: 403, headers: corsHeaders }
+          );
+        }
+      } else {
+        schedule = eligible[0];
       }
     }
 
@@ -239,32 +255,29 @@ async function verifyStudentAccess(
   return (data ?? []).length === studentIds.length;
 }
 
-async function findFrontdeskSchedule(
-  client: any,
-  timezone: string
-): Promise<ScheduleRow | null> {
-  const now = new Date();
-  const dayOfWeek = getDayOfWeek(now, timezone);
+async function findFrontdeskEligibleSchedules(client: any): Promise<ScheduleRow[]> {
   const { data, error } = await client
     .from("class_schedules")
     .select(
       "id, class_type, instructor_id, day_of_week, start_time, end_time, timezone"
     )
-    .eq("day_of_week", dayOfWeek)
     .eq("is_active", true);
-  if (error) return null;
+  if (error) return [];
 
-  const nowMinutes = getMinutesOfDay(now, timezone);
-  const windowStart = nowMinutes - 30;
-  const windowEnd = nowMinutes + 30;
-  const eligible = (data ?? []).filter((row: ScheduleRow) => {
-    const startMinutes = timeToMinutes(row.start_time);
-    return startMinutes >= windowStart && startMinutes <= windowEnd;
-  });
-  eligible.sort((a: ScheduleRow, b: ScheduleRow) =>
-    timeToMinutes(a.start_time) - timeToMinutes(b.start_time)
-  );
-  return eligible[0] ?? null;
+  const now = new Date();
+  const candidates = (data ?? [])
+    .map((row: ScheduleRow) => ({
+      row,
+      delta: minutesUntilSchedule(row, now)
+    }))
+    .filter(
+      (item) =>
+        item.delta >= FRONTDESK_LATE_CHECKIN_LIMIT_MINUTES &&
+        item.delta <= FRONTDESK_EARLY_CHECKIN_LIMIT_MINUTES
+    )
+    .sort((a, b) => a.delta - b.delta);
+
+  return await removeCancelledOccurrences(client, candidates.map((item) => item.row), now);
 }
 
 async function findMobileEligibleSchedules(client: any): Promise<ScheduleRow[]> {
@@ -276,7 +289,7 @@ async function findMobileEligibleSchedules(client: any): Promise<ScheduleRow[]> 
     .eq("is_active", true);
   if (error) return [];
   const now = new Date();
-  return (data ?? [])
+  const candidates = (data ?? [])
     .map((row: ScheduleRow) => ({
       row,
       delta: minutesUntilSchedule(row, now)
@@ -289,6 +302,41 @@ async function findMobileEligibleSchedules(client: any): Promise<ScheduleRow[]> 
     .sort((a, b) => a.delta - b.delta)
     .slice(0, 3)
     .map((item) => item.row);
+
+  return await removeCancelledOccurrences(client, candidates, now);
+}
+
+async function removeCancelledOccurrences(
+  client: any,
+  schedules: ScheduleRow[],
+  now: Date
+): Promise<ScheduleRow[]> {
+  if (!schedules.length) return [];
+
+  const startDate = new Date(now);
+  startDate.setUTCDate(startDate.getUTCDate() - 1);
+  const endDate = new Date(now);
+  endDate.setUTCDate(endDate.getUTCDate() + 14);
+
+  const { data, error } = await client
+    .from("class_schedule_exceptions")
+    .select("schedule_id, occurrence_date")
+    .in("schedule_id", schedules.map((schedule) => schedule.id))
+    .gte("occurrence_date", startDate.toISOString().slice(0, 10))
+    .lte("occurrence_date", endDate.toISOString().slice(0, 10));
+
+  if (error) return schedules;
+
+  const cancelledKeys = new Set(
+    ((data as Array<{ schedule_id: string; occurrence_date: string }> | null) ?? []).map(
+      (row) => `${row.schedule_id}:${row.occurrence_date}`
+    )
+  );
+
+  return schedules.filter((schedule) => {
+    const occurrenceDate = getNextOccurrenceDate(schedule, now);
+    return !cancelledKeys.has(`${schedule.id}:${occurrenceDate}`);
+  });
 }
 
 function minutesUntilSchedule(schedule: ScheduleRow, now: Date) {
@@ -301,6 +349,33 @@ function minutesUntilSchedule(schedule: ScheduleRow, now: Date) {
     delta += 7 * 24 * 60;
   }
   return delta;
+}
+
+function getNextOccurrenceDate(schedule: ScheduleRow, now: Date) {
+  const timezone = safeTimeZone(schedule.timezone || DEFAULT_TIMEZONE);
+  const nowDay = getDayOfWeek(now, timezone);
+  const nowMinutes = getMinutesOfDay(now, timezone);
+  const startMinutes = timeToMinutes(schedule.start_time);
+  let dayOffset = schedule.day_of_week - nowDay;
+
+  if (dayOffset < 0 || (dayOffset === 0 && startMinutes < nowMinutes)) {
+    dayOffset += 7;
+  }
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(now);
+  const year = Number.parseInt(parts.find((part) => part.type === "year")?.value ?? "0", 10);
+  const month =
+    Number.parseInt(parts.find((part) => part.type === "month")?.value ?? "1", 10) - 1;
+  const day = Number.parseInt(parts.find((part) => part.type === "day")?.value ?? "1", 10);
+
+  const baseDate = new Date(Date.UTC(year, month, day));
+  baseDate.setUTCDate(baseDate.getUTCDate() + dayOffset);
+  return baseDate.toISOString().slice(0, 10);
 }
 
 function getDayOfWeek(date: Date, timezone: string) {

@@ -117,6 +117,7 @@ export default function CheckInScreen() {
     name: "checkin",
     tables: [
       "class_schedules",
+      "class_schedule_exceptions",
       "students",
       "student_access",
       "student_badges",

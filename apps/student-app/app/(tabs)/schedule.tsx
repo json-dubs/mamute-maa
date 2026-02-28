@@ -47,7 +47,7 @@ export default function ScheduleScreen() {
 
   useRealtimeRefresh({
     name: "schedule",
-    tables: ["class_schedules", "instructors"],
+    tables: ["class_schedules", "class_schedule_exceptions", "instructors"],
     onRefresh: load
   });
 
@@ -138,28 +138,54 @@ function ScheduleBlock({
     .filter(Boolean)
     .join(" ");
   const classStatus = schedule.isActive ? "Active" : "Cancelled";
+  const isCancelled = !schedule.isActive;
 
   return (
     <Card
       style={[
         {
           marginTop: 8,
-          borderColor: schedule.isActive ? uiColors.border : "#7f1d1d",
-          backgroundColor: schedule.isActive ? uiColors.surfaceAlt : "#2c0f13"
+          borderColor: isCancelled ? "#dc2626" : uiColors.border,
+          backgroundColor: isCancelled ? "#321216" : uiColors.surfaceAlt,
+          borderLeftWidth: isCancelled ? 5 : 1
         },
         compact ? { padding: 10 } : null
       ]}
     >
-      <Row>
-        <Text style={{ fontWeight: "700" }}>{formatClassType(schedule.classType)}</Text>
-        <Badge tone={schedule.isActive ? "success" : "danger"} label={classStatus} />
-      </Row>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 8
+        }}
+      >
+        <Text
+          style={{
+            flex: 1,
+            minWidth: 0,
+            fontWeight: "700",
+            color: isCancelled ? "#fee2e2" : uiColors.text,
+            textDecorationLine: isCancelled ? "line-through" : "none"
+          }}
+        >
+          {formatClassType(schedule.classType)}
+        </Text>
+        <View style={{ flexShrink: 0, alignSelf: "flex-start" }}>
+          <Badge tone={schedule.isActive ? "success" : "danger"} label={classStatus} />
+        </View>
+      </View>
       <Text style={{ color: uiColors.muted }}>
         {formatClockTime(schedule.startTime)} - {formatClockTime(schedule.endTime)}
       </Text>
       <Text style={{ color: uiColors.muted }}>
         {instructor ? `Instructor: ${instructor}` : "Instructor: TBD"}
       </Text>
+      {isCancelled ? (
+        <Text style={{ color: "#fca5a5", fontWeight: "700" }}>
+          Cancelled by admin. Please check Mamute News for updates.
+        </Text>
+      ) : null}
     </Card>
   );
 }

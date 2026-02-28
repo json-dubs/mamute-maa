@@ -8,17 +8,7 @@ export type MembershipType =
 
 export type MembershipStanding = "active" | "inactive" | "overdue";
 
-export type ClassType =
-  | "bjj-gi"
-  | "bjj-nogi"
-  | "kids-bjj-gi"
-  | "kids-bjj-nogi"
-  | "kids-wrestling"
-  | "kids-strength-conditioning"
-  | "kids-muay-thai"
-  | "muay-thai"
-  | "boxing"
-  | "mma";
+export type ClassType = string;
 
 export interface StudentRecord {
   id: string;
@@ -55,6 +45,8 @@ export interface ClassScheduleTemplate {
   endTime: string;
   timezone: string;
   isActive: boolean;
+  recurringActive?: boolean;
+  nextOccurrenceDate?: string | null;
 }
 
 export interface AttendanceRecord {

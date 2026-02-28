@@ -160,23 +160,16 @@ create table if not exists instructor_qualifications (
   primary key (instructor_id, class_type)
 );
 
+create table if not exists class_catalog (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  created_at timestamptz default now()
+);
+
 -- Recurring class schedules
 create table if not exists class_schedules (
   id uuid primary key default gen_random_uuid(),
-  class_type text not null check (
-    class_type in (
-      'bjj-gi',
-      'bjj-nogi',
-      'kids-bjj-gi',
-      'kids-bjj-nogi',
-      'kids-wrestling',
-      'kids-strength-conditioning',
-      'kids-muay-thai',
-      'muay-thai',
-      'boxing',
-      'mma'
-    )
-  ),
+  class_type text not null,
   instructor_id uuid references instructors(id),
   day_of_week int not null check (day_of_week between 0 and 6),
   start_time time not null,
@@ -185,6 +178,62 @@ create table if not exists class_schedules (
   is_active boolean not null default true,
   created_at timestamptz default now()
 );
+
+do $$
+declare
+  constraint_name text;
+begin
+  for constraint_name in
+    select c.conname
+    from pg_constraint c
+    join pg_class t on t.oid = c.conrelid
+    join pg_namespace n on n.oid = t.relnamespace
+    where n.nspname = 'public'
+      and t.relname = 'class_schedules'
+      and c.contype = 'c'
+      and pg_get_constraintdef(c.oid) ilike '%class_type%'
+  loop
+    execute format('alter table public.class_schedules drop constraint if exists %I', constraint_name);
+  end loop;
+end $$;
+
+create table if not exists class_schedule_exceptions (
+  id uuid primary key default gen_random_uuid(),
+  schedule_id uuid not null references class_schedules(id) on delete cascade,
+  occurrence_date date not null,
+  created_by uuid references admins(user_id),
+  created_at timestamptz default now(),
+  unique (schedule_id, occurrence_date)
+);
+
+create index if not exists idx_class_schedule_exceptions_lookup
+  on class_schedule_exceptions (schedule_id, occurrence_date);
+
+insert into class_catalog (name)
+values
+  ('Bjj Gi'),
+  ('Bjj Nogi'),
+  ('Kids Bjj Gi'),
+  ('Kids Bjj Nogi'),
+  ('Kids Wrestling'),
+  ('Kids Strength Conditioning'),
+  ('Kids Muay Thai'),
+  ('Muay Thai'),
+  ('Boxing'),
+  ('Mma')
+on conflict (name) do nothing;
+
+insert into class_catalog (name)
+select distinct class_type
+from class_schedules
+where class_type is not null and trim(class_type) <> ''
+on conflict (name) do nothing;
+
+insert into class_catalog (name)
+select distinct class_type
+from instructor_qualifications
+where class_type is not null and trim(class_type) <> ''
+on conflict (name) do nothing;
 
 -- News posts for admin announcements/events
 create table if not exists mamute_news (
@@ -208,6 +257,259 @@ alter table mamute_news
   add column if not exists post_type text not null default 'general'
     check (post_type in ('general', 'birthday', 'badge', 'payment'));
 update mamute_news set visibility = 'public' where visibility is null;
+
+create or replace function schedule_day_label(p_day int)
+returns text
+language sql
+immutable
+as $$
+  select case p_day
+    when 0 then 'Sunday'
+    when 1 then 'Monday'
+    when 2 then 'Tuesday'
+    when 3 then 'Wednesday'
+    when 4 then 'Thursday'
+    when 5 then 'Friday'
+    when 6 then 'Saturday'
+    else 'Unknown day'
+  end;
+$$;
+
+create or replace function schedule_class_label(p_class_type text)
+returns text
+language sql
+immutable
+returns null on null input
+as $$
+  select initcap(replace(p_class_type, '-', ' '));
+$$;
+
+create or replace function notify_class_schedule_change()
+returns trigger
+language plpgsql
+as $$
+declare
+  actor_id uuid := auth.uid();
+  expiry_at timestamptz := now() + interval '48 hours';
+  active_row class_schedules%rowtype;
+  prior_row class_schedules%rowtype;
+  class_label text;
+  instructor_name text;
+  old_instructor_name text;
+begin
+  if tg_op = 'DELETE' then
+    active_row := old;
+    prior_row := old;
+  else
+    active_row := new;
+    prior_row := old;
+  end if;
+
+  class_label := schedule_class_label(active_row.class_type);
+
+  if active_row.instructor_id is not null then
+    select trim(concat_ws(' ', first_name, last_name))
+    into instructor_name
+    from instructors
+    where id = active_row.instructor_id;
+  end if;
+
+  if tg_op = 'UPDATE' and prior_row.instructor_id is not null then
+    select trim(concat_ws(' ', first_name, last_name))
+    into old_instructor_name
+    from instructors
+    where id = prior_row.instructor_id;
+  end if;
+
+  if tg_op = 'INSERT' then
+    insert into mamute_news (
+      title,
+      description,
+      visibility,
+      post_type,
+      expires_at,
+      created_by
+    )
+    values (
+      format('New Class Added: %s', class_label),
+      format(
+        '%s has been scheduled for %s from %s to %s.%s',
+        class_label,
+        schedule_day_label(active_row.day_of_week),
+        left(active_row.start_time::text, 5),
+        left(active_row.end_time::text, 5),
+        case
+          when nullif(trim(coalesce(instructor_name, '')), '') is not null
+            then format(' Instructor: %s.', instructor_name)
+          else ''
+        end
+      ),
+      'public',
+      'general',
+      expiry_at,
+      actor_id
+    );
+    return new;
+  end if;
+
+  if tg_op = 'DELETE' then
+    insert into mamute_news (
+      title,
+      description,
+      visibility,
+      post_type,
+      expires_at,
+      created_by
+    )
+    values (
+      format('Class Removed: %s', class_label),
+      format(
+        '%s on %s at %s has been removed from the schedule.',
+        class_label,
+        schedule_day_label(active_row.day_of_week),
+        left(active_row.start_time::text, 5)
+      ),
+      'public',
+      'general',
+      expiry_at,
+      actor_id
+    );
+    return old;
+  end if;
+
+  if prior_row.is_active = true and active_row.is_active = false then
+    insert into mamute_news (
+      title,
+      description,
+      visibility,
+      post_type,
+      expires_at,
+      created_by
+    )
+    values (
+      format('Class Cancelled: %s', class_label),
+      format(
+        '%s on %s at %s has been cancelled.%s',
+        class_label,
+        schedule_day_label(active_row.day_of_week),
+        left(active_row.start_time::text, 5),
+        case
+          when nullif(trim(coalesce(instructor_name, '')), '') is not null
+            then format(' Instructor: %s.', instructor_name)
+          else ''
+        end
+      ),
+      'public',
+      'general',
+      expiry_at,
+      actor_id
+    );
+    return new;
+  end if;
+
+  if (
+    prior_row.day_of_week is distinct from active_row.day_of_week or
+    prior_row.start_time is distinct from active_row.start_time or
+    prior_row.end_time is distinct from active_row.end_time
+  ) then
+    insert into mamute_news (
+      title,
+      description,
+      visibility,
+      post_type,
+      expires_at,
+      created_by
+    )
+    values (
+      format('Class Time Changed: %s', class_label),
+      format(
+        '%s moved from %s at %s-%s to %s at %s-%s.%s',
+        class_label,
+        schedule_day_label(prior_row.day_of_week),
+        left(prior_row.start_time::text, 5),
+        left(prior_row.end_time::text, 5),
+        schedule_day_label(active_row.day_of_week),
+        left(active_row.start_time::text, 5),
+        left(active_row.end_time::text, 5),
+        case
+          when nullif(trim(coalesce(instructor_name, old_instructor_name, '')), '') is not null
+            then format(' Instructor: %s.', coalesce(instructor_name, old_instructor_name))
+          else ''
+        end
+      ),
+      'public',
+      'general',
+      expiry_at,
+      actor_id
+    );
+    return new;
+  end if;
+
+  return new;
+end;
+$$;
+
+create or replace function notify_class_schedule_exception_change()
+returns trigger
+language plpgsql
+as $$
+declare
+  actor_id uuid := coalesce(auth.uid(), new.created_by);
+  expiry_at timestamptz := now() + interval '48 hours';
+  schedule_row class_schedules%rowtype;
+  instructor_name text;
+begin
+  if tg_op <> 'INSERT' then
+    return new;
+  end if;
+
+  select *
+  into schedule_row
+  from class_schedules
+  where id = new.schedule_id;
+
+  if schedule_row.id is null then
+    return new;
+  end if;
+
+  if schedule_row.instructor_id is not null then
+    select trim(concat_ws(' ', first_name, last_name))
+    into instructor_name
+    from instructors
+    where id = schedule_row.instructor_id;
+  end if;
+
+  insert into mamute_news (
+    title,
+    description,
+    visibility,
+    post_type,
+    expires_at,
+    created_by
+  )
+  values (
+    format('Class Cancelled: %s', schedule_class_label(schedule_row.class_type)),
+    format(
+      '%s on %s at %s has been cancelled for %s only.%s',
+      schedule_class_label(schedule_row.class_type),
+      schedule_day_label(schedule_row.day_of_week),
+      left(schedule_row.start_time::text, 5),
+      new.occurrence_date::text,
+      case
+        when nullif(trim(coalesce(instructor_name, '')), '') is not null
+          then format(' Instructor: %s.', instructor_name)
+        else ''
+      end
+    ),
+    'public',
+    'general',
+    expiry_at,
+    actor_id
+  );
+
+  return new;
+end;
+$$;
 
 -- Badge catalog and student badge assignments
 create table if not exists badges (
@@ -648,6 +950,16 @@ create trigger attendance_assign_badges
 after insert on attendance
 for each row execute function assign_attendance_milestone_badge();
 
+drop trigger if exists class_schedules_notify_news on class_schedules;
+create trigger class_schedules_notify_news
+after insert or update or delete on class_schedules
+for each row execute function notify_class_schedule_change();
+
+drop trigger if exists class_schedule_exceptions_notify_news on class_schedule_exceptions;
+create trigger class_schedule_exceptions_notify_news
+after insert on class_schedule_exceptions
+for each row execute function notify_class_schedule_exception_change();
+
 drop trigger if exists students_notify_overdue_membership on students;
 create trigger students_notify_overdue_membership
 after insert or update of membership_standing on students
@@ -659,7 +971,9 @@ alter table students enable row level security;
 alter table student_access enable row level security;
 alter table instructors enable row level security;
 alter table instructor_qualifications enable row level security;
+alter table class_catalog enable row level security;
 alter table class_schedules enable row level security;
+alter table class_schedule_exceptions enable row level security;
 alter table attendance enable row level security;
 alter table mamute_news enable row level security;
 alter table badges enable row level security;
@@ -685,7 +999,15 @@ create policy "admins full access qualifications" on instructor_qualifications
   for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
   with check (exists (select 1 from admins a where a.user_id = auth.uid()));
 
+create policy "admins full access class catalog" on class_catalog
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
+
 create policy "admins full access schedules" on class_schedules
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
+
+create policy "admins full access schedule exceptions" on class_schedule_exceptions
   for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
   with check (exists (select 1 from admins a where a.user_id = auth.uid()));
 
@@ -756,7 +1078,13 @@ create policy "student attendance read" on attendance
     )
   );
 
+create policy "class catalog public read" on class_catalog
+  for select using (true);
+
 create policy "student schedule read" on class_schedules
+  for select using (true);
+
+create policy "schedule exceptions public read" on class_schedule_exceptions
   for select using (true);
 
 drop policy if exists "student news read active" on mamute_news;

@@ -51,28 +51,31 @@ type InstructorRecord = {
 
 type InstructorQualificationRecord = {
   instructor_id: string;
-  class_type: ClassScheduleRecord["class_type"];
+  class_type: string;
 };
 
 type ClassScheduleRecord = {
   id: string;
-  class_type:
-    | "bjj-gi"
-    | "bjj-nogi"
-    | "kids-bjj-gi"
-    | "kids-bjj-nogi"
-    | "kids-wrestling"
-    | "kids-strength-conditioning"
-    | "kids-muay-thai"
-    | "muay-thai"
-    | "boxing"
-    | "mma";
+  class_type: string;
   instructor_id: string | null;
   day_of_week: number;
   start_time: string;
   end_time: string;
   timezone: string;
   is_active: boolean;
+};
+
+type ClassCatalogRecord = {
+  id: string;
+  name: string;
+  created_at: string;
+};
+
+type ScheduleExceptionRecord = {
+  id: string;
+  schedule_id: string;
+  occurrence_date: string;
+  created_at: string;
 };
 
 type AttendanceStudent = {
@@ -82,7 +85,7 @@ type AttendanceStudent = {
 };
 
 type AttendanceSchedule = {
-  class_type: ClassScheduleRecord["class_type"];
+  class_type: string;
   day_of_week: number;
   start_time: string;
 };
@@ -151,32 +154,6 @@ const membershipStandings: StudentRecord["membership_standing"][] = [
   "overdue"
 ];
 
-const classTypes: ClassScheduleRecord["class_type"][] = [
-  "bjj-gi",
-  "bjj-nogi",
-  "kids-bjj-gi",
-  "kids-bjj-nogi",
-  "kids-wrestling",
-  "kids-strength-conditioning",
-  "kids-muay-thai",
-  "muay-thai",
-  "boxing",
-  "mma"
-];
-
-const classTypeColors: Record<ClassScheduleRecord["class_type"], string> = {
-  "bjj-gi": "#1e40af",
-  "bjj-nogi": "#1d4ed8",
-  "kids-bjj-gi": "#15803d",
-  "kids-bjj-nogi": "#16a34a",
-  "kids-wrestling": "#7c3aed",
-  "kids-strength-conditioning": "#6d28d9",
-  "kids-muay-thai": "#b45309",
-  "muay-thai": "#c2410c",
-  boxing: "#b91c1c",
-  mma: "#7f1d1d"
-};
-
 const dayOptions = [
   { value: 0, label: "Sunday" },
   { value: 1, label: "Monday" },
@@ -207,9 +184,11 @@ export function App() {
   const [isAttendanceLoading, setIsAttendanceLoading] = useState(false);
 
   const [barcode, setBarcode] = useState("");
+  const [selectedCheckinScheduleId, setSelectedCheckinScheduleId] = useState("");
   const [checkinMessage, setCheckinMessage] = useState<string | null>(null);
   const [checkinResponse, setCheckinResponse] = useState<CheckInResponse | null>(null);
   const [isCheckingIn, setIsCheckingIn] = useState(false);
+  const [checkinNow, setCheckinNow] = useState(() => Date.now());
 
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [studentsMessage, setStudentsMessage] = useState<string | null>(null);
@@ -253,9 +232,20 @@ export function App() {
     null
   );
   const [schedules, setSchedules] = useState<ClassScheduleRecord[]>([]);
+  const [classCatalog, setClassCatalog] = useState<ClassCatalogRecord[]>([]);
+  const [scheduleExceptions, setScheduleExceptions] = useState<ScheduleExceptionRecord[]>([]);
+  const [draftSchedules, setDraftSchedules] = useState<ClassScheduleRecord[]>([]);
+  const [draftScheduleExceptions, setDraftScheduleExceptions] = useState<
+    ScheduleExceptionRecord[]
+  >([]);
   const [schedulesMessage, setSchedulesMessage] = useState<string | null>(null);
   const [isSchedulesLoading, setIsSchedulesLoading] = useState(false);
   const [isScheduleEditing, setIsScheduleEditing] = useState(false);
+  const [isScheduleSaving, setIsScheduleSaving] = useState(false);
+  const [classCatalogMessage, setClassCatalogMessage] = useState<string | null>(null);
+  const [newClassName, setNewClassName] = useState("");
+  const [editingClassId, setEditingClassId] = useState<string | null>(null);
+  const [editingClassName, setEditingClassName] = useState("");
   const [newsPosts, setNewsPosts] = useState<MamuteNewsRecord[]>([]);
   const [newsTitle, setNewsTitle] = useState("");
   const [newsDescription, setNewsDescription] = useState("");
@@ -297,6 +287,224 @@ export function App() {
   }, [supabase]);
 
   useEffect(() => {
+    const interval = window.setInterval(() => {
+      setCheckinNow(Date.now());
+    }, 30000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const actualNextOccurrenceBySchedule = useMemo(() => {
+    const now = new Date();
+    return new Map(
+      schedules.map((schedule) => [schedule.id, getNextOccurrenceDate(schedule, now)])
+    );
+  }, [schedules]);
+
+  const actualCancelledNextOccurrenceIds = useMemo(() => {
+    const keys = new Set(
+      scheduleExceptions.map((item) => `${item.schedule_id}:${item.occurrence_date}`)
+    );
+    return new Set(
+      schedules
+        .filter((schedule) => {
+          const occurrenceDate = actualNextOccurrenceBySchedule.get(schedule.id);
+          if (!occurrenceDate) return false;
+          return keys.has(`${schedule.id}:${occurrenceDate}`);
+        })
+        .map((schedule) => schedule.id)
+    );
+  }, [actualNextOccurrenceBySchedule, scheduleExceptions, schedules]);
+
+  const workingSchedules = isScheduleEditing ? draftSchedules : schedules;
+  const workingScheduleExceptions = isScheduleEditing
+    ? draftScheduleExceptions
+    : scheduleExceptions;
+
+  const nextOccurrenceBySchedule = useMemo(() => {
+    const now = new Date();
+    return new Map(
+      workingSchedules.map((schedule) => [schedule.id, getNextOccurrenceDate(schedule, now)])
+    );
+  }, [workingSchedules]);
+
+  const cancelledNextOccurrenceIds = useMemo(() => {
+    const keys = new Set(
+      workingScheduleExceptions.map((item) => `${item.schedule_id}:${item.occurrence_date}`)
+    );
+    return new Set(
+      workingSchedules
+        .filter((schedule) => {
+          const occurrenceDate = nextOccurrenceBySchedule.get(schedule.id);
+          if (!occurrenceDate) return false;
+          return keys.has(`${schedule.id}:${occurrenceDate}`);
+        })
+        .map((schedule) => schedule.id)
+    );
+  }, [nextOccurrenceBySchedule, workingScheduleExceptions, workingSchedules]);
+
+  const eligibleFrontdeskSchedules = useMemo(() => {
+    const now = new Date(checkinNow);
+    return schedules
+      .filter(
+        (schedule) =>
+          schedule.is_active && !actualCancelledNextOccurrenceIds.has(schedule.id)
+      )
+      .map((schedule) => ({
+        schedule,
+        delta: minutesUntilSchedule(schedule, now)
+      }))
+      .filter((item) => item.delta >= -30 && item.delta <= 4 * 60)
+      .sort((a, b) => a.delta - b.delta)
+      .map((item) => item.schedule);
+  }, [actualCancelledNextOccurrenceIds, checkinNow, schedules]);
+
+  useEffect(() => {
+    if (!eligibleFrontdeskSchedules.length) {
+      setSelectedCheckinScheduleId("");
+      return;
+    }
+
+    if (
+      !selectedCheckinScheduleId ||
+      !eligibleFrontdeskSchedules.some((schedule) => schedule.id === selectedCheckinScheduleId)
+    ) {
+      setSelectedCheckinScheduleId(eligibleFrontdeskSchedules[0].id);
+    }
+  }, [eligibleFrontdeskSchedules, selectedCheckinScheduleId]);
+
+  const beginScheduleEditing = () => {
+    setSchedulesMessage(null);
+    setDraftSchedules(schedules.map((item) => ({ ...item })));
+    setDraftScheduleExceptions(scheduleExceptions.map((item) => ({ ...item })));
+    setIsScheduleEditing(true);
+  };
+
+  const cancelScheduleEditing = () => {
+    setDraftSchedules([]);
+    setDraftScheduleExceptions([]);
+    setSchedulesMessage(null);
+    setIsScheduleEditing(false);
+  };
+
+  const saveScheduleDraft = async () => {
+    if (!session) return;
+    setSchedulesMessage(null);
+    setIsScheduleSaving(true);
+
+    const currentById = new Map(schedules.map((item) => [item.id, item]));
+    const draftRealIds = new Set(
+      draftSchedules.filter((item) => !isDraftId(item.id)).map((item) => item.id)
+    );
+    const draftIdMap = new Map<string, string>();
+
+    try {
+      for (const schedule of draftSchedules) {
+        const payload = {
+          class_type: schedule.class_type,
+          instructor_id: schedule.instructor_id,
+          day_of_week: schedule.day_of_week,
+          start_time: schedule.start_time,
+          end_time: schedule.end_time,
+          timezone: schedule.timezone,
+          is_active: schedule.is_active
+        };
+
+        if (isDraftId(schedule.id)) {
+          const { data, error } = await supabase
+            .from("class_schedules")
+            .insert(payload)
+            .select("id")
+            .single();
+          if (error) throw error;
+          if (data?.id) {
+            draftIdMap.set(schedule.id, data.id);
+          }
+          continue;
+        }
+
+        const current = currentById.get(schedule.id);
+        if (!current) continue;
+
+        if (
+          current.class_type !== schedule.class_type ||
+          current.instructor_id !== schedule.instructor_id ||
+          current.day_of_week !== schedule.day_of_week ||
+          current.start_time !== schedule.start_time ||
+          current.end_time !== schedule.end_time ||
+          current.timezone !== schedule.timezone ||
+          current.is_active !== schedule.is_active
+        ) {
+          const { error } = await supabase
+            .from("class_schedules")
+            .update(payload)
+            .eq("id", schedule.id);
+          if (error) throw error;
+        }
+      }
+
+      for (const schedule of schedules) {
+        if (!draftRealIds.has(schedule.id)) {
+          const { error } = await supabase
+            .from("class_schedules")
+            .delete()
+            .eq("id", schedule.id);
+          if (error) throw error;
+        }
+      }
+
+      const normalizedDraftExceptions = draftScheduleExceptions.map((item) => ({
+        ...item,
+        schedule_id: draftIdMap.get(item.schedule_id) ?? item.schedule_id
+      }));
+
+      const currentExceptionKeys = new Map(
+        scheduleExceptions.map((item) => [`${item.schedule_id}:${item.occurrence_date}`, item])
+      );
+      const draftExceptionKeys = new Set(
+        normalizedDraftExceptions.map((item) => `${item.schedule_id}:${item.occurrence_date}`)
+      );
+
+      for (const item of normalizedDraftExceptions) {
+        const key = `${item.schedule_id}:${item.occurrence_date}`;
+        if (currentExceptionKeys.has(key)) continue;
+        const { error } = await supabase.from("class_schedule_exceptions").insert({
+          schedule_id: item.schedule_id,
+          occurrence_date: item.occurrence_date
+        });
+        if (error) throw error;
+      }
+
+      for (const item of scheduleExceptions) {
+        const key = `${item.schedule_id}:${item.occurrence_date}`;
+        if (!draftExceptionKeys.has(key)) {
+          const { error } = await supabase
+            .from("class_schedule_exceptions")
+            .delete()
+            .eq("id", item.id);
+          if (error) throw error;
+        }
+      }
+
+      await Promise.all([loadSchedules(), loadScheduleExceptions()]);
+      setDraftSchedules([]);
+      setDraftScheduleExceptions([]);
+      setIsScheduleEditing(false);
+    } catch (error: any) {
+      setSchedulesMessage(error?.message ?? "Failed to save schedule changes");
+    } finally {
+      setIsScheduleSaving(false);
+    }
+  };
+
+  const toggleScheduleEditing = async () => {
+    if (!isScheduleEditing) {
+      beginScheduleEditing();
+      return;
+    }
+    await saveScheduleDraft();
+  };
+
+  useEffect(() => {
     const loadAdminState = async () => {
       if (!session?.user?.id) {
         setIsAdmin(false);
@@ -324,6 +532,8 @@ export function App() {
       loadStudents();
       loadInstructors();
       loadSchedules();
+      loadClassCatalog();
+      loadScheduleExceptions();
       loadQualifications();
       loadAttendance();
       loadAllGuardians();
@@ -333,6 +543,10 @@ export function App() {
       setStudents([]);
       setInstructors([]);
       setSchedules([]);
+      setClassCatalog([]);
+      setScheduleExceptions([]);
+      setDraftSchedules([]);
+      setDraftScheduleExceptions([]);
       setQualifications([]);
       setAttendanceRows([]);
       setGuardianRows([]);
@@ -390,11 +604,13 @@ export function App() {
         singleNumber.length > 0
           ? {
               studentNumbers: singleNumber,
+              scheduleId: selectedCheckinScheduleId || undefined,
               source: "frontdesk",
               deviceId: "windows-admin"
             }
           : {
               barcode,
+              scheduleId: selectedCheckinScheduleId || undefined,
               source: "frontdesk",
               deviceId: "windows-admin"
             };
@@ -796,7 +1012,7 @@ export function App() {
     setSelectedQualifications(current);
   };
 
-  const toggleQualification = (value: ClassScheduleRecord["class_type"]) => {
+  const toggleQualification = (value: string) => {
     setSelectedQualifications((prev) =>
       prev.includes(value) ? prev.filter((item) => item !== value) : [...prev, value]
     );
@@ -852,6 +1068,45 @@ export function App() {
       setSchedulesMessage(error?.message ?? "Failed to load schedules");
     } finally {
       setIsSchedulesLoading(false);
+    }
+  };
+
+  const loadClassCatalog = async () => {
+    setClassCatalogMessage(null);
+    try {
+      const { data, error } = await supabase
+        .from("class_catalog")
+        .select("id, name, created_at")
+        .order("name", { ascending: true });
+      if (error) throw error;
+      setClassCatalog((data as ClassCatalogRecord[]) ?? []);
+    } catch (error: any) {
+      setClassCatalog([]);
+      const message = typeof error?.message === "string" ? error.message : "";
+      if (!message.toLowerCase().includes("class_catalog")) {
+        setClassCatalogMessage(message || "Failed to load class names");
+      }
+    }
+  };
+
+  const loadScheduleExceptions = async () => {
+    try {
+      const today = new Date();
+      const startDate = new Date(today);
+      startDate.setDate(startDate.getDate() - 1);
+      const endDate = new Date(today);
+      endDate.setDate(endDate.getDate() + 14);
+
+      const { data, error } = await supabase
+        .from("class_schedule_exceptions")
+        .select("id, schedule_id, occurrence_date, created_at")
+        .gte("occurrence_date", startDate.toISOString().slice(0, 10))
+        .lte("occurrence_date", endDate.toISOString().slice(0, 10))
+        .order("occurrence_date", { ascending: true });
+      if (error) throw error;
+      setScheduleExceptions((data as ScheduleExceptionRecord[]) ?? []);
+    } catch {
+      setScheduleExceptions([]);
     }
   };
 
@@ -1335,7 +1590,7 @@ export function App() {
   const timeSlots = Array.from({ length: 12 }, (_, idx) => 9 + idx);
   const defaultTimezone = "America/Toronto";
 
-  const scheduleBySlot = schedules.reduce<Record<string, ClassScheduleRecord>>(
+  const scheduleBySlot = workingSchedules.reduce<Record<string, ClassScheduleRecord>>(
     (acc, schedule) => {
       const hour = Number.parseInt(schedule.start_time.split(":")[0], 10);
       if (Number.isFinite(hour)) {
@@ -1352,40 +1607,144 @@ export function App() {
     return `${normalized}:00 ${suffix}`;
   };
 
+  const paletteClasses = classCatalog.length
+    ? classCatalog
+    : [...new Set(schedules.map((schedule) => schedule.class_type))]
+        .sort((a, b) => a.localeCompare(b))
+        .map((name) => ({
+          id: `derived-${name}`,
+          name,
+          created_at: ""
+        }));
+
+  const resetClassEdit = () => {
+    setEditingClassId(null);
+    setEditingClassName("");
+    setNewClassName("");
+  };
+
+  const startEditClass = (item: ClassCatalogRecord) => {
+    setEditingClassId(item.id);
+    setEditingClassName(item.name);
+    setNewClassName("");
+  };
+
+  const submitClassCatalog = async (event: FormEvent) => {
+    event.preventDefault();
+    setClassCatalogMessage(null);
+    if (!session) {
+      setClassCatalogMessage("Sign in as admin to manage class names.");
+      return;
+    }
+
+    const targetName = (editingClassId ? editingClassName : newClassName).trim();
+    if (!targetName) {
+      setClassCatalogMessage("Enter a class name.");
+      return;
+    }
+
+    try {
+      if (editingClassId) {
+        const existing = classCatalog.find((item) => item.id === editingClassId);
+        if (!existing) {
+          setClassCatalogMessage("Class name was not found.");
+          return;
+        }
+
+        const { error: updateCatalogError } = await supabase
+          .from("class_catalog")
+          .update({ name: targetName })
+          .eq("id", editingClassId);
+        if (updateCatalogError) throw updateCatalogError;
+
+        if (existing.name !== targetName) {
+          const { error: scheduleRenameError } = await supabase
+            .from("class_schedules")
+            .update({ class_type: targetName })
+            .eq("class_type", existing.name);
+          if (scheduleRenameError) throw scheduleRenameError;
+
+          const { error: qualificationRenameError } = await supabase
+            .from("instructor_qualifications")
+            .update({ class_type: targetName })
+            .eq("class_type", existing.name);
+          if (qualificationRenameError) throw qualificationRenameError;
+        }
+      } else {
+        const { error } = await supabase.from("class_catalog").insert({
+          name: targetName
+        });
+        if (error) throw error;
+      }
+
+      resetClassEdit();
+      await loadClassCatalog();
+      await loadSchedules();
+      await loadQualifications();
+    } catch (error: any) {
+      setClassCatalogMessage(error?.message ?? "Failed to save class name");
+    }
+  };
+
+  const deleteClassCatalogItem = async (item: ClassCatalogRecord) => {
+    if (!session) return;
+    if (schedules.some((schedule) => schedule.class_type === item.name)) {
+      setClassCatalogMessage("Remove this class from the schedule before deleting its name.");
+      return;
+    }
+    const confirmed = window.confirm(`Delete "${item.name}" from the class menu?`);
+    if (!confirmed) return;
+    setClassCatalogMessage(null);
+    try {
+      const { error } = await supabase.from("class_catalog").delete().eq("id", item.id);
+      if (error) throw error;
+      if (editingClassId === item.id) {
+        resetClassEdit();
+      }
+      await loadClassCatalog();
+    } catch (error: any) {
+      setClassCatalogMessage(error?.message ?? "Failed to delete class name");
+    }
+  };
+
   const handleDropSchedule = async (
     dayOfWeek: number,
     hour: number,
-    classType: ClassScheduleRecord["class_type"]
+    classType: string
   ) => {
     if (!session || !isScheduleEditing) return;
     setSchedulesMessage(null);
     const key = `${dayOfWeek}-${hour}`;
     const existing = scheduleBySlot[key];
-    const payload = {
-      class_type: classType,
-      instructor_id: existing?.instructor_id ?? null,
-      day_of_week: dayOfWeek,
-      start_time: `${String(hour).padStart(2, "0")}:00`,
-      end_time: `${String(hour + 1).padStart(2, "0")}:00`,
-      timezone: existing?.timezone ?? defaultTimezone,
-      is_active: true
-    };
-
-    try {
+    setDraftSchedules((prev) => {
       if (existing?.id) {
-        const { error } = await supabase
-          .from("class_schedules")
-          .update(payload)
-          .eq("id", existing.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.from("class_schedules").insert(payload);
-        if (error) throw error;
+        return prev.map((item) =>
+          item.id === existing.id
+            ? {
+                ...item,
+                class_type: classType,
+                day_of_week: dayOfWeek,
+                start_time: `${String(hour).padStart(2, "0")}:00`,
+                end_time: `${String(hour + 1).padStart(2, "0")}:00`
+              }
+            : item
+        );
       }
-      await loadSchedules();
-    } catch (error: any) {
-      setSchedulesMessage(error?.message ?? "Failed to save schedule");
-    }
+
+      return [
+        ...prev,
+        {
+          id: `draft-${crypto.randomUUID()}`,
+          class_type: classType,
+          instructor_id: null,
+          day_of_week: dayOfWeek,
+          start_time: `${String(hour).padStart(2, "0")}:00`,
+          end_time: `${String(hour + 1).padStart(2, "0")}:00`,
+          timezone: defaultTimezone,
+          is_active: true
+        }
+      ];
+    });
   };
 
   const handleDropInstructor = async (
@@ -1405,31 +1764,49 @@ export function App() {
       setSchedulesMessage("Instructor is not qualified for this class.");
       return;
     }
-    try {
-      const { error } = await supabase
-        .from("class_schedules")
-        .update({ instructor_id: instructorId })
-        .eq("id", existing.id);
-      if (error) throw error;
-      await loadSchedules();
-    } catch (error: any) {
-      setSchedulesMessage(error?.message ?? "Failed to save schedule");
-    }
+    setDraftSchedules((prev) =>
+      prev.map((item) =>
+        item.id === existing.id ? { ...item, instructor_id: instructorId } : item
+      )
+    );
   };
 
   const clearScheduleSlot = async (scheduleId: string) => {
     if (!session || !isScheduleEditing) return;
     setSchedulesMessage(null);
-    try {
-      const { error } = await supabase
-        .from("class_schedules")
-        .delete()
-        .eq("id", scheduleId);
-      if (error) throw error;
-      await loadSchedules();
-    } catch (error: any) {
-      setSchedulesMessage(error?.message ?? "Failed to clear slot");
+    setDraftSchedules((prev) => prev.filter((item) => item.id !== scheduleId));
+    setDraftScheduleExceptions((prev) =>
+      prev.filter((item) => item.schedule_id !== scheduleId)
+    );
+  };
+
+  const toggleNextOccurrenceCancellation = async (schedule: ClassScheduleRecord) => {
+    if (!session || !isScheduleEditing) return;
+    const occurrenceDate = nextOccurrenceBySchedule.get(schedule.id);
+    if (!occurrenceDate) {
+      setSchedulesMessage("Could not determine the next occurrence for this class.");
+      return;
     }
+
+    setSchedulesMessage(null);
+    setDraftScheduleExceptions((prev) => {
+      const draftExisting = prev.find(
+        (item) =>
+          item.schedule_id === schedule.id && item.occurrence_date === occurrenceDate
+      );
+      if (draftExisting) {
+        return prev.filter((item) => item.id !== draftExisting.id);
+      }
+      return [
+        ...prev,
+        {
+          id: `draft-${crypto.randomUUID()}`,
+          schedule_id: schedule.id,
+          occurrence_date: occurrenceDate,
+          created_at: new Date().toISOString()
+        }
+      ];
+    });
   };
 
   const startEditInstructor = (instructor: InstructorRecord) => {
@@ -1538,7 +1915,7 @@ export function App() {
 
   const isInstructorQualified = (
     instructorId: string,
-    classType: ClassScheduleRecord["class_type"]
+    classType: string
   ) => {
     if (!instructorId) return true;
     return qualifications.some(
@@ -1669,15 +2046,42 @@ export function App() {
                   disabled={isCheckingIn}
                 />
               </label>
-              <button className="button" type="submit" disabled={isCheckingIn}>
+              <label className="field">
+                <span>Class</span>
+                <select
+                  className="input"
+                  value={selectedCheckinScheduleId}
+                  onChange={(event) => setSelectedCheckinScheduleId(event.target.value)}
+                  disabled={isCheckingIn || !eligibleFrontdeskSchedules.length}
+                >
+                  {eligibleFrontdeskSchedules.length ? (
+                    eligibleFrontdeskSchedules.map((schedule) => (
+                      <option key={schedule.id} value={schedule.id}>
+                        {formatFrontdeskScheduleOption(schedule, checkinNow)}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">No classes available in next 4 hours</option>
+                  )}
+                </select>
+              </label>
+              <button
+                className="button"
+                type="submit"
+                disabled={isCheckingIn || !eligibleFrontdeskSchedules.length}
+              >
                 {isCheckingIn ? "Checking in..." : "Check in"}
               </button>
             </form>
+            <p className="muted">
+              Select the current class or any active class starting in the next 4 hours.
+              Late front desk check-in remains available for 30 minutes after class start.
+            </p>
             {checkinMessage ? <p className="error">{checkinMessage}</p> : null}
             {checkinResponse ? (
               <div className="results">
                 <p className="muted">
-                  Next class: {checkinResponse.schedule.classType} -{" "}
+                  Checked into: {checkinResponse.schedule.classType} -{" "}
                   {checkinResponse.schedule.startTime}
                 </p>
                 <ul>
@@ -1701,37 +2105,106 @@ export function App() {
           <section className="panel">
             <h2>Classes</h2>
             <p className="muted">
-              Weekly schedule (9am-9pm). Click edit to unlock, then drag a class into a
-              timeslot.
+              Create class names for the drag menu, then place them onto the weekly grid.
+              Cancellation now applies only to the next occurrence and resets automatically
+              after that class has passed.
             </p>
             <div className="form-actions">
               <button
                 className={isScheduleEditing ? "button secondary" : "button"}
                 type="button"
-                onClick={() => setIsScheduleEditing((prev) => !prev)}
-                disabled={!session}
+                onClick={() => void toggleScheduleEditing()}
+                disabled={!session || isScheduleSaving}
               >
-                {isScheduleEditing ? "Lock Schedule" : "Edit Schedule"}
+                {isScheduleEditing
+                  ? isScheduleSaving
+                    ? "Saving..."
+                    : "Save & Lock Schedule"
+                  : "Edit Schedule"}
               </button>
+              {isScheduleEditing ? (
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={cancelScheduleEditing}
+                  disabled={isScheduleSaving}
+                >
+                  Discard Draft
+                </button>
+              ) : null}
             </div>
+            <form className="form" onSubmit={submitClassCatalog}>
+              <label className="field">
+                <span>{editingClassId ? "Edit Class Name" : "New Class Name"}</span>
+                <input
+                  className="input"
+                  value={editingClassId ? editingClassName : newClassName}
+                  onChange={(event) =>
+                    editingClassId
+                      ? setEditingClassName(event.target.value)
+                      : setNewClassName(event.target.value)
+                  }
+                  placeholder="Competition Team"
+                  disabled={!session}
+                />
+              </label>
+              <div className="form-actions">
+                <button className="button" type="submit" disabled={!session}>
+                  {editingClassId ? "Save Name" : "Add Class Name"}
+                </button>
+                {editingClassId ? (
+                  <button className="button secondary" type="button" onClick={resetClassEdit}>
+                    Cancel Edit
+                  </button>
+                ) : null}
+              </div>
+            </form>
+            {classCatalogMessage ? <p className="error">{classCatalogMessage}</p> : null}
             {schedulesMessage ? <p className="error">{schedulesMessage}</p> : null}
             {isSchedulesLoading ? <p className="muted">Loading schedules...</p> : null}
-          <div className="schedule-layout">
-            <div className="class-palette">
+            <div className="schedule-layout">
+              <div className="class-palette">
                 <p className="muted">Available classes</p>
                 <div className="chip-group">
-                  {classTypes.map((type) => (
+                  {paletteClasses.map((item) => (
                     <div
-                      key={type}
+                      key={item.id}
                       className="chip draggable"
                       draggable={isScheduleEditing}
                       onDragStart={(event) => {
-                      event.dataTransfer.setData("type", "class");
-                      event.dataTransfer.setData("value", type);
+                        event.dataTransfer.setData("type", "class");
+                        event.dataTransfer.setData("value", item.name);
                       }}
-                      style={{ backgroundColor: classTypeColors[type], borderColor: "transparent" }}
+                      style={{
+                        backgroundColor: getClassColor(item.name),
+                        borderColor: "transparent"
+                      }}
                     >
-                      {type}
+                      <span>{item.name}</span>
+                      {!item.id.startsWith("derived-") ? (
+                        <span className="chip-inline-actions">
+                          <button
+                            className="chip-mini-button"
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              startEditClass(item);
+                            }}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            className="chip-mini-button"
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void deleteClassCatalogItem(item);
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </span>
+                      ) : null}
                     </div>
                   ))}
                 </div>
@@ -1772,7 +2245,15 @@ export function App() {
                       return (
                         <div
                           key={slotKey}
-                          className={slot ? "slot filled" : "slot"}
+                          className={
+                            slot
+                              ? `slot filled${
+                                  isNextOccurrenceCancelled(slot, cancelledNextOccurrenceIds)
+                                    ? " cancelled"
+                                    : ""
+                                }`
+                              : "slot"
+                          }
                           onDragOver={(event) => {
                             if (isScheduleEditing) {
                               event.preventDefault();
@@ -1798,7 +2279,7 @@ export function App() {
                         {slot ? (
                           <div className="slot-content">
                             <div className="slot-title">
-                              {slot.class_type}
+                              {formatDisplayLabel(slot.class_type)}
                             </div>
                             <div className="slot-subtle">
                               {(() => {
@@ -1810,6 +2291,22 @@ export function App() {
                                   : "Unassigned";
                               })()}
                             </div>
+                            <button
+                              className={
+                                isNextOccurrenceCancelled(slot, cancelledNextOccurrenceIds)
+                                  ? "slot-status-toggle cancelled"
+                                  : "slot-status-toggle"
+                              }
+                              type="button"
+                              disabled={!isScheduleEditing}
+                              onClick={() => toggleNextOccurrenceCancellation(slot)}
+                            >
+                              {getNextOccurrenceStatusLabel(
+                                slot,
+                                cancelledNextOccurrenceIds,
+                                nextOccurrenceBySchedule
+                              )}
+                            </button>
                             {isScheduleEditing ? (
                               <button
                                 className="slot-clear"
@@ -2597,11 +3094,12 @@ export function App() {
               </select>
             </label>
             <div className="chip-group">
-              {classTypes.map((type) => {
+              {paletteClasses.map((item) => {
+                const type = item.name;
                 const checked = selectedQualifications.includes(type);
                 return (
                   <button
-                    key={type}
+                    key={item.id}
                     type="button"
                     className={checked ? "chip active" : "chip"}
                     onClick={() => toggleQualification(type)}
@@ -2695,5 +3193,147 @@ function calculateAgeFromBirthDate(birthDate: string | null | undefined) {
     age -= 1;
   }
   return age >= 0 ? age : null;
+}
+
+function getClassColor(className: string) {
+  const palette = [
+    "#1d4ed8",
+    "#7c3aed",
+    "#15803d",
+    "#c2410c",
+    "#b91c1c",
+    "#0369a1",
+    "#a21caf",
+    "#be123c"
+  ];
+  const seed = className
+    .split("")
+    .reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return palette[seed % palette.length];
+}
+
+function isNextOccurrenceCancelled(
+  schedule: ClassScheduleRecord,
+  cancelledIds: Set<string>
+) {
+  return cancelledIds.has(schedule.id);
+}
+
+function getNextOccurrenceStatusLabel(
+  schedule: ClassScheduleRecord,
+  cancelledIds: Set<string>,
+  occurrenceMap: Map<string, string>
+) {
+  const occurrenceDate = occurrenceMap.get(schedule.id);
+  const base = cancelledIds.has(schedule.id) ? "Next: Cancelled" : "Next: Active";
+  return occurrenceDate ? `${base} (${occurrenceDate})` : base;
+}
+
+function getNextOccurrenceDate(schedule: ClassScheduleRecord, now: Date) {
+  const timezone = safeTimeZone(schedule.timezone || "America/Toronto");
+  const nowDay = getDayOfWeek(now, timezone);
+  const nowMinutes = getMinutesOfDay(now, timezone);
+  const startMinutes = timeToMinutes(schedule.start_time);
+  let dayOffset = schedule.day_of_week - nowDay;
+
+  if (dayOffset < 0 || (dayOffset === 0 && startMinutes < nowMinutes)) {
+    dayOffset += 7;
+  }
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(now);
+  const year = Number.parseInt(parts.find((part) => part.type === "year")?.value ?? "0", 10);
+  const month =
+    Number.parseInt(parts.find((part) => part.type === "month")?.value ?? "1", 10) - 1;
+  const day = Number.parseInt(parts.find((part) => part.type === "day")?.value ?? "1", 10);
+
+  const baseDate = new Date(Date.UTC(year, month, day));
+  baseDate.setUTCDate(baseDate.getUTCDate() + dayOffset);
+  return baseDate.toISOString().slice(0, 10);
+}
+
+function formatFrontdeskScheduleOption(
+  schedule: ClassScheduleRecord,
+  nowTimestamp: number
+) {
+  const now = new Date(nowTimestamp);
+  const delta = minutesUntilSchedule(schedule, now);
+  const dayLabel = delta < 24 * 60
+    ? "Today"
+    : dayOptions.find((day) => day.value === schedule.day_of_week)?.label ?? "Upcoming";
+  const statusLabel =
+    delta < 0
+      ? `Late check-in (${Math.abs(delta)} min after start)`
+      : delta === 0
+        ? "Starts now"
+        : `Starts in ${delta} min`;
+
+  return `${dayLabel} ${schedule.start_time} - ${formatDisplayLabel(schedule.class_type)} - ${statusLabel}`;
+}
+
+function formatDisplayLabel(value?: string | null) {
+  if (!value) return "Unknown";
+  return value
+    .split("-")
+    .filter(Boolean)
+    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
+    .join(" ");
+}
+
+function minutesUntilSchedule(schedule: ClassScheduleRecord, now: Date) {
+  const timezone = safeTimeZone(schedule.timezone || "America/Toronto");
+  const nowDay = getDayOfWeek(now, timezone);
+  const nowMinutes = getMinutesOfDay(now, timezone);
+  const startMinutes = timeToMinutes(schedule.start_time);
+  let delta = (schedule.day_of_week - nowDay) * 24 * 60 + (startMinutes - nowMinutes);
+  if (delta < -30) {
+    delta += 7 * 24 * 60;
+  }
+  return delta;
+}
+
+function getDayOfWeek(date: Date, timezone: string) {
+  const label = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    weekday: "short"
+  }).format(date);
+  return { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[label] ?? 0;
+}
+
+function getMinutesOfDay(date: Date, timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+  const hour = Number.parseInt(parts.find((part) => part.type === "hour")?.value ?? "0", 10);
+  const minute = Number.parseInt(
+    parts.find((part) => part.type === "minute")?.value ?? "0",
+    10
+  );
+  return hour * 60 + minute;
+}
+
+function timeToMinutes(value: string) {
+  const [hour, minute] = value.split(":").map((chunk) => Number.parseInt(chunk, 10));
+  return (Number.isFinite(hour) ? hour : 0) * 60 + (Number.isFinite(minute) ? minute : 0);
+}
+
+function isDraftId(value: string) {
+  return value.startsWith("draft-");
+}
+
+function safeTimeZone(timezone: string) {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date());
+    return timezone;
+  } catch {
+    return "America/Toronto";
+  }
 }
 
