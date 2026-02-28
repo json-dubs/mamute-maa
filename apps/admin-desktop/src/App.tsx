@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { createClient, Session } from "@supabase/supabase-js";
 import logo from "../../student-app/assets/images/MamuteLogo.png";
 
@@ -77,6 +77,13 @@ type ScheduleExceptionRecord = {
   occurrence_date: string;
   created_at: string;
 };
+
+type ScheduleDragPayload =
+  | {
+      type: "class" | "instructor";
+      value: string;
+    }
+  | null;
 
 type AttendanceStudent = {
   first_name: string | null;
@@ -267,6 +274,7 @@ export function App() {
   const [newClassName, setNewClassName] = useState("");
   const [editingClassId, setEditingClassId] = useState<string | null>(null);
   const [editingClassName, setEditingClassName] = useState("");
+  const [scheduleDragPayload, setScheduleDragPayload] = useState<ScheduleDragPayload>(null);
   const [newsPosts, setNewsPosts] = useState<MamuteNewsRecord[]>([]);
   const [newsTitle, setNewsTitle] = useState("");
   const [newsDescription, setNewsDescription] = useState("");
@@ -400,6 +408,7 @@ export function App() {
     setSchedulesMessage(null);
     setDraftSchedules(schedules.map((item) => ({ ...item })));
     setDraftScheduleExceptions(scheduleExceptions.map((item) => ({ ...item })));
+    setScheduleDragPayload(null);
     setIsScheduleEditing(true);
   };
 
@@ -407,6 +416,7 @@ export function App() {
     setDraftSchedules([]);
     setDraftScheduleExceptions([]);
     setSchedulesMessage(null);
+    setScheduleDragPayload(null);
     setIsScheduleEditing(false);
   };
 
@@ -512,6 +522,7 @@ export function App() {
       await Promise.all([loadSchedules(), loadScheduleExceptions()]);
       setDraftSchedules([]);
       setDraftScheduleExceptions([]);
+      setScheduleDragPayload(null);
       setIsScheduleEditing(false);
     } catch (error: any) {
       setSchedulesMessage(error?.message ?? "Failed to save schedule changes");
@@ -1806,6 +1817,51 @@ export function App() {
     }
   };
 
+  const handleScheduleDragStart = (
+    event: DragEvent<HTMLDivElement>,
+    payload: NonNullable<ScheduleDragPayload>
+  ) => {
+    if (!isScheduleEditing) return;
+    setScheduleDragPayload(payload);
+    event.dataTransfer.effectAllowed = "copy";
+    const serializedPayload = JSON.stringify(payload);
+    event.dataTransfer.setData("text/plain", serializedPayload);
+    try {
+      event.dataTransfer.setData("application/x-mamute-schedule", serializedPayload);
+    } catch {
+      // Tauri/WebView drag support can vary; the in-memory payload remains the fallback.
+    }
+  };
+
+  const clearScheduleDragPayload = () => {
+    setScheduleDragPayload(null);
+  };
+
+  const readScheduleDragPayload = (
+    event: DragEvent<HTMLDivElement>
+  ): NonNullable<ScheduleDragPayload> | null => {
+    const transferData =
+      event.dataTransfer.getData("application/x-mamute-schedule") ||
+      event.dataTransfer.getData("text/plain");
+    if (transferData) {
+      try {
+        const parsed = JSON.parse(transferData) as ScheduleDragPayload;
+        if (
+          parsed &&
+          (parsed.type === "class" || parsed.type === "instructor") &&
+          typeof parsed.value === "string" &&
+          parsed.value
+        ) {
+          return parsed;
+        }
+      } catch {
+        // Fall back to the React state payload below.
+      }
+    }
+
+    return scheduleDragPayload;
+  };
+
   const handleDropSchedule = async (
     dayOfWeek: number,
     hour: number,
@@ -2292,10 +2348,13 @@ export function App() {
                       key={item.id}
                       className="chip draggable"
                       draggable={isScheduleEditing}
-                      onDragStart={(event) => {
-                        event.dataTransfer.setData("type", "class");
-                        event.dataTransfer.setData("value", item.name);
-                      }}
+                      onDragStart={(event) =>
+                        handleScheduleDragStart(event, {
+                          type: "class",
+                          value: item.name
+                        })
+                      }
+                      onDragEnd={clearScheduleDragPayload}
                       style={{
                         backgroundColor: getClassColor(item.name),
                         borderColor: "transparent"
@@ -2338,10 +2397,13 @@ export function App() {
                     key={instructor.id}
                     className="chip draggable"
                     draggable={isScheduleEditing}
-                    onDragStart={(event) => {
-                      event.dataTransfer.setData("type", "instructor");
-                      event.dataTransfer.setData("value", instructor.id);
-                    }}
+                    onDragStart={(event) =>
+                      handleScheduleDragStart(event, {
+                        type: "instructor",
+                        value: instructor.id
+                      })
+                    }
+                    onDragEnd={clearScheduleDragPayload}
                   >
                     {getInstructorLabel(instructor)}
                   </div>
@@ -2378,23 +2440,25 @@ export function App() {
                           onDragOver={(event) => {
                             if (isScheduleEditing) {
                               event.preventDefault();
+                              event.dataTransfer.dropEffect = "copy";
                             }
                           }}
                           onDrop={(event) => {
                             if (!isScheduleEditing) return;
-                          const payloadType = event.dataTransfer.getData("type");
-                          const value = event.dataTransfer.getData("value");
-                          if (!payloadType || !value) return;
-                          if (payloadType === "class") {
-                            handleDropSchedule(
-                              day.value,
-                              hour,
-                              value as ClassScheduleRecord["class_type"]
-                            );
-                          }
-                          if (payloadType === "instructor") {
-                            handleDropInstructor(day.value, hour, value);
-                          }
+                            event.preventDefault();
+                            const payload = readScheduleDragPayload(event);
+                            clearScheduleDragPayload();
+                            if (!payload) return;
+                            if (payload.type === "class") {
+                              void handleDropSchedule(
+                                day.value,
+                                hour,
+                                payload.value as ClassScheduleRecord["class_type"]
+                              );
+                            }
+                            if (payload.type === "instructor") {
+                              void handleDropInstructor(day.value, hour, payload.value);
+                            }
                           }}
                         >
                         {slot ? (
