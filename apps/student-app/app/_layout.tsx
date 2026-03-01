@@ -60,10 +60,25 @@ function RootLayoutNav() {
   const colorScheme = useColorScheme();
   const supabase = useMemo(() => getSupabaseClient(), []);
 
+  const ensureNotificationChannel = useCallback(async () => {
+    if (Platform.OS !== "android") return;
+
+    await Notifications.setNotificationChannelAsync("general", {
+      name: "General",
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: "#e11d2e",
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+      sound: "default"
+    });
+  }, []);
+
   const syncPushToken = useCallback(async () => {
     if (Platform.OS !== "android" && Platform.OS !== "ios") return;
 
     try {
+      await ensureNotificationChannel();
+
       const { data: sessionData } = await supabase.auth.getSession();
       const userId = sessionData.session?.user.id;
       if (!userId) return;
@@ -97,7 +112,7 @@ function RootLayoutNav() {
     } catch (error) {
       console.warn("push token registration failed", error);
     }
-  }, [supabase]);
+  }, [ensureNotificationChannel, supabase]);
 
   useEffect(() => {
     void syncPushToken();
