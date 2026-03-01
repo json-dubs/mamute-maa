@@ -1536,6 +1536,7 @@ export function App() {
     let attachmentPath: string | null = null;
     let attachmentName: string | null = null;
     let attachmentMimeType: string | null = null;
+    let pushDispatchFailed = false;
 
     try {
       if (newsAttachment) {
@@ -1570,6 +1571,20 @@ export function App() {
       });
       if (error) throw error;
 
+      try {
+        await supabase.functions.invoke("sendNotification", {
+          body: {
+            id: crypto.randomUUID(),
+            title,
+            body: truncateNotificationBody(description),
+            target: {}
+          }
+        });
+      } catch (pushError) {
+        pushDispatchFailed = true;
+        console.warn("Failed to dispatch news push notification", pushError);
+      }
+
       setNewsTitle("");
       setNewsDescription("");
       setNewsExpiresAt("");
@@ -1579,6 +1594,11 @@ export function App() {
         | null;
       if (newsFileInput) newsFileInput.value = "";
       await loadNews();
+      setNewsMessage(
+        pushDispatchFailed
+          ? "News post created, but push notification delivery failed."
+          : "News post created and push notification sent."
+      );
     } catch (error: any) {
       setNewsMessage(error?.message ?? "Failed to create news post");
     } finally {
@@ -4069,6 +4089,12 @@ function escapeHtml(value: string) {
 function toCsvCell(value: string) {
   const normalized = value.replaceAll('"', '""');
   return `"${normalized}"`;
+}
+
+function truncateNotificationBody(value: string, maxLength = 140) {
+  const normalized = value.trim().replace(/\s+/g, " ");
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
 function getClassColor(className: string) {

@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getSupabaseConfig } from "@mamute/config";
 
 let cachedClient: SupabaseClient | null = null;
@@ -12,7 +13,12 @@ export function getSupabaseClient(): SupabaseClient {
   }
 
   cachedClient = createClient(url, anonKey, {
-    auth: { persistSession: true }
+    auth: {
+      storage: AsyncStorage,
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: false
+    }
   });
   return cachedClient;
 }
