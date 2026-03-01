@@ -560,9 +560,50 @@ create table if not exists push_tokens (
   profile_id uuid not null references auth.users(id) on delete cascade,
   expo_token text not null,
   platform text not null check (platform in ('ios', 'android', 'web')),
+  app_variant text,
   updated_at timestamptz not null default now(),
   primary key (profile_id, platform)
 );
+
+do $$
+begin
+  alter table push_tokens add column if not exists app_variant text;
+exception
+  when undefined_table then null;
+end $$;
+
+do $$
+declare
+  constraint_name text;
+begin
+  for constraint_name in
+    select tc.constraint_name
+    from information_schema.table_constraints tc
+    where tc.table_schema = 'public'
+      and tc.table_name = 'push_tokens'
+      and tc.constraint_type = 'PRIMARY KEY'
+  loop
+    execute format('alter table public.push_tokens drop constraint if exists %I', constraint_name);
+  end loop;
+exception
+  when undefined_table then null;
+end $$;
+
+do $$
+begin
+  delete from public.push_tokens p
+  using public.push_tokens newer
+  where p.expo_token = newer.expo_token
+    and p.ctid < newer.ctid;
+exception
+  when undefined_table then null;
+end $$;
+
+create unique index if not exists idx_push_tokens_expo_token
+  on push_tokens (expo_token);
+
+create index if not exists idx_push_tokens_profile_id
+  on push_tokens (profile_id, updated_at desc);
 
 create table if not exists student_automation_events (
   id uuid primary key default gen_random_uuid(),

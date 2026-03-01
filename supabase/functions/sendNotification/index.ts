@@ -8,43 +8,151 @@ interface PushJob {
   target: { profileId?: string; classId?: string; role?: string };
 }
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS"
+};
+
+export const config = {
+  verify_jwt: false
+};
+
 Deno.serve(async (req) => {
-  if (req.method !== "POST") {
-    return new Response("Method not allowed", { status: 405 });
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
   }
 
-  const supabase = createServiceClient();
-  const payload = (await req.json()) as PushJob;
+  if (req.method !== "POST") {
+    return new Response("Method not allowed", { status: 405, headers: corsHeaders });
+  }
 
-  const tokens = await fetchTokens(supabase, payload.target);
-  await fanOutExpo(tokens, payload);
+  try {
+    const authUser = await requireAdminUser(req);
+    const supabase = createServiceClient();
+    const payload = (await req.json()) as PushJob;
 
-  await supabase
-    .from("notifications")
-    .update({ sent_at: new Date().toISOString() })
-    .eq("id", payload.id);
+    console.log(
+      JSON.stringify({
+        event: "push_request_received",
+        id: payload.id,
+        title: payload.title,
+        target: payload.target,
+        requesterId: authUser.id
+      })
+    );
 
-  return Response.json({ delivered: tokens.length });
+    const tokens = await fetchTokens(supabase, payload.target);
+    console.log(
+      JSON.stringify({
+        event: "push_tokens_resolved",
+        id: payload.id,
+        tokenCount: tokens.length
+      })
+    );
+
+    const expoResult = await fanOutExpo(tokens, payload);
+
+    await supabase
+      .from("notifications")
+      .update({ sent_at: new Date().toISOString() })
+      .eq("id", payload.id);
+
+    return Response.json({
+      delivered: tokens.length,
+      expoResult
+    }, { headers: corsHeaders });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown push error";
+    console.error(
+      JSON.stringify({
+        event: "push_delivery_failed",
+        message
+      })
+    );
+    return Response.json({ error: message }, { status: 500, headers: corsHeaders });
+  }
 });
 
 async function fetchTokens(client: any, target: PushJob["target"]) {
-  let query = client.from("push_tokens").select("expo_token");
+  let query = client.from("push_tokens").select("expo_token, app_variant");
   if (target.profileId) query = query.eq("profile_id", target.profileId);
-  return (await query).data ?? [];
+  const { data, error } = await query;
+  if (error) {
+    throw new Error(`Failed to load push tokens: ${error.message}`);
+  }
+  return ((data ?? []) as { expo_token: string; app_variant?: string | null }[]).filter(
+    (row) => row.app_variant === "standalone" || row.app_variant === "bare"
+  );
 }
 
 async function fanOutExpo(tokens: any[], payload: PushJob) {
-  if (!tokens.length) return;
+  if (!tokens.length) {
+    return {
+      status: "no_tokens",
+      tickets: []
+    };
+  }
+
   const chunks = tokens.map((row) => ({
     to: row.expo_token,
     title: payload.title,
     body: payload.body
   }));
-  await fetch("https://exp.host/--/api/v2/push/send", {
+
+  const response = await fetch("https://exp.host/--/api/v2/push/send", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
     body: JSON.stringify(chunks)
   });
+
+  const responseText = await response.text();
+  let responseBody: unknown = null;
+
+  try {
+    responseBody = responseText ? JSON.parse(responseText) : null;
+  } catch {
+    responseBody = responseText;
+  }
+
+  console.log(
+    JSON.stringify({
+      event: "expo_push_response",
+      status: response.status,
+      ok: response.ok,
+      body: responseBody
+    })
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Expo push API returned ${response.status}: ${truncateForLog(responseText)}`
+    );
+  }
+
+  const tickets =
+    responseBody &&
+    typeof responseBody === "object" &&
+    "data" in responseBody &&
+    Array.isArray((responseBody as { data?: unknown[] }).data)
+      ? ((responseBody as { data: unknown[] }).data ?? [])
+      : [];
+
+  const ticketErrors = tickets.filter(isErroredTicket);
+  if (ticketErrors.length) {
+    throw new Error(
+      `Expo rejected ${ticketErrors.length} push notification(s): ${JSON.stringify(ticketErrors)}`
+    );
+  }
+
+  return {
+    status: "ok",
+    tickets
+  };
 }
 
 function createServiceClient() {
@@ -55,4 +163,58 @@ function createServiceClient() {
     throw new Error("Missing PROJECT_URL or SERVICE_ROLE_KEY");
   }
   return createClient(url, key, { auth: { autoRefreshToken: false } });
+}
+
+async function requireAdminUser(req: Request) {
+  const url = Deno.env.get("PROJECT_URL") || Deno.env.get("SUPABASE_URL");
+  const anonKey = Deno.env.get("ANON_KEY") || Deno.env.get("SUPABASE_ANON_KEY");
+  if (!url || !anonKey) {
+    throw new Error("Missing PROJECT_URL or ANON_KEY");
+  }
+
+  const authHeader = req.headers.get("Authorization") ?? "";
+  if (!authHeader) {
+    throw new Error("Missing Authorization header");
+  }
+
+  const authClient = createClient(url, anonKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  const { data: authData, error: authError } = await authClient.auth.getUser();
+  if (authError || !authData.user) {
+    throw new Error("Unauthorized requester");
+  }
+
+  const serviceClient = createServiceClient();
+  const { data: adminRow, error: adminError } = await serviceClient
+    .from("admins")
+    .select("user_id")
+    .eq("user_id", authData.user.id)
+    .maybeSingle();
+
+  if (adminError) {
+    throw new Error(`Failed to verify admin access: ${adminError.message}`);
+  }
+
+  if (!adminRow) {
+    throw new Error("Requester is not an admin");
+  }
+
+  return authData.user;
+}
+
+function isErroredTicket(ticket: unknown) {
+  return Boolean(
+    ticket &&
+      typeof ticket === "object" &&
+      "status" in ticket &&
+      (ticket as { status?: string }).status === "error"
+  );
+}
+
+function truncateForLog(value: string, maxLength = 500) {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength).trimEnd()}...`;
 }

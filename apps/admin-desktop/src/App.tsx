@@ -1467,6 +1467,7 @@ export function App() {
   };
 
   const sendOverduePushNotifications = async (studentId: string) => {
+    if (!session?.access_token) return;
     try {
       const { data: accessRows, error } = await supabase
         .from("student_access")
@@ -1478,7 +1479,10 @@ export function App() {
         ...new Set((accessRows ?? []).map((row: { user_id: string }) => row.user_id))
       ];
       for (const userId of userIds) {
-        await supabase.functions.invoke("sendNotification", {
+        const { error: pushError } = await supabase.functions.invoke("sendNotification", {
+          headers: {
+            Authorization: `Bearer ${session.access_token}`
+          },
           body: {
             id: crypto.randomUUID(),
             title: "Payment Required",
@@ -1486,6 +1490,7 @@ export function App() {
             target: { profileId: userId }
           }
         });
+        if (pushError) throw pushError;
       }
     } catch (error) {
       console.warn("Failed to dispatch overdue push notification", error);
@@ -1572,7 +1577,10 @@ export function App() {
       if (error) throw error;
 
       try {
-        await supabase.functions.invoke("sendNotification", {
+        const { error: pushError } = await supabase.functions.invoke("sendNotification", {
+          headers: {
+            Authorization: `Bearer ${session.access_token}`
+          },
           body: {
             id: crypto.randomUUID(),
             title,
@@ -1580,9 +1588,14 @@ export function App() {
             target: {}
           }
         });
+        if (pushError) throw pushError;
       } catch (pushError) {
         pushDispatchFailed = true;
+        const pushErrorMessage = await getFunctionInvokeErrorMessage(pushError);
         console.warn("Failed to dispatch news push notification", pushError);
+        setNewsMessage(
+          `News post created, but push notification delivery failed: ${pushErrorMessage}`
+        );
       }
 
       setNewsTitle("");
@@ -1594,11 +1607,9 @@ export function App() {
         | null;
       if (newsFileInput) newsFileInput.value = "";
       await loadNews();
-      setNewsMessage(
-        pushDispatchFailed
-          ? "News post created, but push notification delivery failed."
-          : "News post created and push notification sent."
-      );
+      if (!pushDispatchFailed) {
+        setNewsMessage("News post created and push notification sent.");
+      }
     } catch (error: any) {
       setNewsMessage(error?.message ?? "Failed to create news post");
     } finally {
@@ -4089,6 +4100,37 @@ function escapeHtml(value: string) {
 function toCsvCell(value: string) {
   const normalized = value.replaceAll('"', '""');
   return `"${normalized}"`;
+}
+
+async function getFunctionInvokeErrorMessage(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return "Unknown push error";
+  }
+
+  const response = "context" in error ? (error as { context?: unknown }).context : null;
+  if (response instanceof Response) {
+    try {
+      const responseText = await response.clone().text();
+      if (!responseText) {
+        return `${response.status} ${response.statusText}`.trim();
+      }
+
+      try {
+        const parsed = JSON.parse(responseText) as { error?: string; message?: string };
+        return parsed.error ?? parsed.message ?? responseText;
+      } catch {
+        return responseText;
+      }
+    } catch {
+      return `${response.status} ${response.statusText}`.trim();
+    }
+  }
+
+  if ("message" in error && typeof (error as { message?: unknown }).message === "string") {
+    return (error as { message: string }).message;
+  }
+
+  return "Unknown push error";
 }
 
 function truncateNotificationBody(value: string, maxLength = 140) {

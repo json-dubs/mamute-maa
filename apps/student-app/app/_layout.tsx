@@ -82,11 +82,16 @@ function RootLayoutNav() {
         projectId ? { projectId } : undefined
       );
       const platform = Platform.OS === "ios" ? "ios" : Platform.OS === "android" ? "android" : "web";
+      const appVariant =
+        typeof Constants.executionEnvironment === "string"
+          ? Constants.executionEnvironment
+          : "unknown";
 
       await registerPushToken({
         profileId: userId,
         token: tokenResponse.data,
         platform,
+        appVariant,
         updatedAt: new Date().toISOString()
       });
     } catch (error) {

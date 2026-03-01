@@ -8,9 +8,10 @@ export async function registerPushToken(token: PushToken) {
       profile_id: token.profileId,
       expo_token: token.token,
       platform: token.platform,
+      app_variant: token.appVariant ?? null,
       updated_at: token.updatedAt
     },
-    { onConflict: "profile_id,platform" }
+    { onConflict: "expo_token" }
   );
   if (error) throw error;
   return true;

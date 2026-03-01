@@ -73,6 +73,7 @@ export interface PushToken {
   profileId: string;
   token: string;
   platform: "ios" | "android" | "web";
+  appVariant?: string;
   updatedAt: string;
 }
 
