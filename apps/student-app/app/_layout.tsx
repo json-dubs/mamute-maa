@@ -11,6 +11,7 @@ import { Platform } from "react-native";
 import 'react-native-reanimated';
 
 import { useColorScheme } from '@/components/useColorScheme';
+import { resetPushDebugState, updatePushDebugState } from "../lib/pushDebug";
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -81,7 +82,14 @@ function RootLayoutNav() {
 
       const { data: sessionData } = await supabase.auth.getSession();
       const userId = sessionData.session?.user.id;
-      if (!userId) return;
+      if (!userId) {
+        updatePushDebugState({
+          sessionUserId: null,
+          lastRegistrationStatus: "error",
+          lastRegistrationError: "No authenticated session available for push registration."
+        });
+        return;
+      }
 
       const { status: existingStatus } = await Notifications.getPermissionsAsync();
       let finalStatus = existingStatus;
@@ -89,7 +97,15 @@ function RootLayoutNav() {
         const permission = await Notifications.requestPermissionsAsync();
         finalStatus = permission.status;
       }
-      if (finalStatus !== "granted") return;
+      if (finalStatus !== "granted") {
+        updatePushDebugState({
+          sessionUserId: userId,
+          permissionStatus: finalStatus,
+          lastRegistrationStatus: "error",
+          lastRegistrationError: "Notification permission was not granted."
+        });
+        return;
+      }
 
       const projectId =
         Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
@@ -109,7 +125,22 @@ function RootLayoutNav() {
         appVariant,
         updatedAt: new Date().toISOString()
       });
+
+      updatePushDebugState({
+        sessionUserId: userId,
+        permissionStatus: finalStatus,
+        projectId: projectId ?? null,
+        expoToken: tokenResponse.data,
+        appVariant,
+        lastRegistrationStatus: "success",
+        lastRegistrationError: null
+      });
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown push registration error";
+      updatePushDebugState({
+        lastRegistrationStatus: "error",
+        lastRegistrationError: message
+      });
       console.warn("push token registration failed", error);
     }
   }, [ensureNotificationChannel, supabase]);
@@ -121,6 +152,15 @@ function RootLayoutNav() {
     });
     return () => subscription.subscription.unsubscribe();
   }, [supabase, syncPushToken]);
+
+  useEffect(() => {
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, next) => {
+      if (!next?.user.id) {
+        resetPushDebugState();
+      }
+    });
+    return () => subscription.subscription.unsubscribe();
+  }, [supabase]);
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>

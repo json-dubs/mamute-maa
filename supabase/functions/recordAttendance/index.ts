@@ -300,10 +300,10 @@ async function findMobileEligibleSchedules(client: any): Promise<ScheduleRow[]> 
         item.delta <= MOBILE_EARLY_CHECKIN_LIMIT_MINUTES
     )
     .sort((a, b) => a.delta - b.delta)
-    .slice(0, 3)
     .map((item) => item.row);
 
-  return await removeCancelledOccurrences(client, candidates, now);
+  const notCancelled = await removeCancelledOccurrences(client, candidates, now);
+  return notCancelled.slice(0, 3);
 }
 
 async function removeCancelledOccurrences(

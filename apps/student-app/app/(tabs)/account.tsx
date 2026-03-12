@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Alert,
   Image,
@@ -22,6 +22,7 @@ import {
 import { LinkedStudentSummary } from "@mamute/types";
 import { classifyStanding } from "@mamute/utils";
 import { useRealtimeRefresh } from "../../components/useRealtimeRefresh";
+import { getPushDebugState, subscribePushDebug } from "../../lib/pushDebug";
 
 type LinkStep = "email" | "students";
 
@@ -72,6 +73,10 @@ function formatAccountError(error: any, fallback: string) {
 export default function AccountScreen() {
   const supabase = useMemo(() => getSupabaseClient(), []);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+  const pushDebug = useSyncExternalStore(subscribePushDebug, getPushDebugState);
+  const [pushTokenRows, setPushTokenRows] = useState<
+    { expo_token: string; platform: string; app_variant: string | null; updated_at: string }[]
+  >([]);
 
   const [email, setEmail] = useState("");
   const [step, setStep] = useState<LinkStep>("email");
@@ -134,10 +139,37 @@ export default function AccountScreen() {
     }
   }, [sessionUserId]);
 
+  const loadPushTokenRows = useCallback(async () => {
+    if (!sessionUserId) {
+      setPushTokenRows([]);
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from("push_tokens")
+        .select("expo_token, platform, app_variant, updated_at")
+        .eq("profile_id", sessionUserId)
+        .order("updated_at", { ascending: false });
+      if (error) throw error;
+      setPushTokenRows(
+        ((data as {
+          expo_token: string;
+          platform: string;
+          app_variant: string | null;
+          updated_at: string;
+        }[]) ?? [])
+      );
+    } catch {
+      setPushTokenRows([]);
+    }
+  }, [sessionUserId, supabase]);
+
   useEffect(() => {
     loadLinkedStudents();
     loadNotifications();
-  }, [loadLinkedStudents, loadNotifications]);
+    loadPushTokenRows();
+  }, [loadLinkedStudents, loadNotifications, loadPushTokenRows]);
 
   useRealtimeRefresh({
     name: "account-linked-data",
@@ -157,6 +189,13 @@ export default function AccountScreen() {
     name: "account-notifications",
     tables: ["notifications"],
     onRefresh: loadNotifications,
+    enabled: Boolean(sessionUserId)
+  });
+
+  useRealtimeRefresh({
+    name: "account-push-tokens",
+    tables: ["push_tokens"],
+    onRefresh: loadPushTokenRows,
     enabled: Boolean(sessionUserId)
   });
 
@@ -339,6 +378,56 @@ export default function AccountScreen() {
             </Pressable>
             {message ? <Text style={styles.errorText}>{message}</Text> : null}
           </Card>
+
+          <SectionHeader
+            title="Push Debug"
+            subtitle="Temporary diagnostics for push registration on this device"
+          />
+          <Card style={styles.debugCard}>
+            <Text style={styles.debugLine}>
+              Permission: {pushDebug.permissionStatus ?? "unknown"}
+            </Text>
+            <Text style={styles.debugLine}>
+              App variant: {pushDebug.appVariant ?? "unknown"}
+            </Text>
+            <Text style={styles.debugLine}>
+              Project ID: {pushDebug.projectId ?? "missing"}
+            </Text>
+            <Text style={styles.debugLine}>
+              Session user: {pushDebug.sessionUserId ?? "missing"}
+            </Text>
+            <Text style={styles.debugLine}>
+              Registration: {pushDebug.lastRegistrationStatus}
+            </Text>
+            <Text style={styles.debugLine}>
+              Last error: {pushDebug.lastRegistrationError ?? "none"}
+            </Text>
+            <Text style={styles.debugLine}>
+              Updated: {pushDebug.updatedAt ?? "never"}
+            </Text>
+            <Text style={styles.debugLine}>
+              Token: {pushDebug.expoToken ? maskPushToken(pushDebug.expoToken) : "missing"}
+            </Text>
+            <Text style={styles.debugSubheading}>Supabase push_tokens rows</Text>
+            {pushTokenRows.length ? (
+              pushTokenRows.map((row, index) => (
+                <View key={`${row.expo_token}-${index}`} style={styles.debugRow}>
+                  <Text style={styles.debugLine}>Platform: {row.platform}</Text>
+                  <Text style={styles.debugLine}>
+                    App variant: {row.app_variant ?? "null"}
+                  </Text>
+                  <Text style={styles.debugLine}>
+                    Updated: {new Date(row.updated_at).toLocaleString()}
+                  </Text>
+                  <Text style={styles.debugLine}>
+                    Token: {maskPushToken(row.expo_token)}
+                  </Text>
+                </View>
+              ))
+            ) : (
+              <Text style={styles.debugLine}>No push token rows found for this user.</Text>
+            )}
+          </Card>
         </ScrollView>
       </Screen>
     );
@@ -405,6 +494,37 @@ export default function AccountScreen() {
         ) : null}
 
         {message ? <Text style={styles.errorText}>{message}</Text> : null}
+      </Card>
+
+      <SectionHeader
+        title="Push Debug"
+        subtitle="Temporary diagnostics for push registration on this device"
+      />
+      <Card style={styles.debugCard}>
+        <Text style={styles.debugLine}>
+          Permission: {pushDebug.permissionStatus ?? "unknown"}
+        </Text>
+        <Text style={styles.debugLine}>
+          App variant: {pushDebug.appVariant ?? "unknown"}
+        </Text>
+        <Text style={styles.debugLine}>
+          Project ID: {pushDebug.projectId ?? "missing"}
+        </Text>
+        <Text style={styles.debugLine}>
+          Session user: {pushDebug.sessionUserId ?? "missing"}
+        </Text>
+        <Text style={styles.debugLine}>
+          Registration: {pushDebug.lastRegistrationStatus}
+        </Text>
+        <Text style={styles.debugLine}>
+          Last error: {pushDebug.lastRegistrationError ?? "none"}
+        </Text>
+        <Text style={styles.debugLine}>
+          Updated: {pushDebug.updatedAt ?? "never"}
+        </Text>
+        <Text style={styles.debugLine}>
+          Token: {pushDebug.expoToken ? maskPushToken(pushDebug.expoToken) : "missing"}
+        </Text>
       </Card>
     </Screen>
   );
@@ -530,6 +650,28 @@ const styles = StyleSheet.create({
   errorText: {
     color: "#fca5a5",
     marginTop: 10
+  },
+  debugCard: {
+    marginTop: 8,
+    backgroundColor: "#0f172a",
+    borderColor: "#334155"
+  },
+  debugSubheading: {
+    marginTop: 10,
+    marginBottom: 6,
+    fontWeight: "800",
+    color: "#f8fafc"
+  },
+  debugLine: {
+    color: "#cbd5e1",
+    fontSize: 12,
+    lineHeight: 18
+  },
+  debugRow: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#334155"
   }
 });
 
@@ -572,4 +714,9 @@ function alertMessage(title: string, body: string) {
   const safeTitle = title || "Notification";
   const safeBody = body || "";
   Alert.alert(safeTitle, safeBody);
+}
+
+function maskPushToken(value: string) {
+  if (value.length <= 20) return value;
+  return `${value.slice(0, 18)}...${value.slice(-8)}`;
 }
