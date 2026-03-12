@@ -146,6 +146,34 @@ type BadgeRecord = {
   created_at: string;
 };
 
+type ShopMerchandiseType =
+  | "uniform"
+  | "shirt"
+  | "pants"
+  | "shorts"
+  | "accessory"
+  | "training";
+
+type ShopMerchandiseSex = "male" | "female" | "unisex";
+
+type ShopMerchandiseSize = "XS" | "S" | "M" | "L" | "XL" | "XXL";
+
+type ShopMerchandiseRecord = {
+  id: string;
+  name: string;
+  description: string;
+  item_type: ShopMerchandiseType;
+  sex: ShopMerchandiseSex;
+  sizes: ShopMerchandiseSize[];
+  image_path: string | null;
+  image_name: string | null;
+  image_mime_type: string | null;
+  is_active: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 const membershipTypes: StudentRecord["membership_type"][] = [
   "adults-unlimited",
   "kids-unlimited",
@@ -171,8 +199,26 @@ const dayOptions = [
   { value: 6, label: "Saturday" }
 ];
 
+const shopItemTypeOptions: { value: ShopMerchandiseType; label: string }[] = [
+  { value: "uniform", label: "Uniform" },
+  { value: "shirt", label: "Shirt" },
+  { value: "pants", label: "Pants" },
+  { value: "shorts", label: "Shorts" },
+  { value: "accessory", label: "Accessory" },
+  { value: "training", label: "Training" }
+];
+
+const shopSexOptions: { value: ShopMerchandiseSex; label: string }[] = [
+  { value: "male", label: "Male" },
+  { value: "female", label: "Female" },
+  { value: "unisex", label: "Unisex" }
+];
+
+const shopSizeOptions: ShopMerchandiseSize[] = ["XS", "S", "M", "L", "XL", "XXL"];
+
 const newsBucket = "mamute-news";
 const badgesBucket = "mamute-badges";
+const shopBucket = "mamute-shop";
 
 type AdminTab =
   | "frontdesk"
@@ -180,6 +226,7 @@ type AdminTab =
   | "instructors"
   | "classes"
   | "news"
+  | "shop"
   | "badges"
   | "attendance"
   | "settings";
@@ -190,6 +237,7 @@ const adminTabs: { id: AdminTab; label: string }[] = [
   { id: "instructors", label: "Instructors" },
   { id: "classes", label: "Classes" },
   { id: "news", label: "Mamute News" },
+  { id: "shop", label: "Shop" },
   { id: "badges", label: "Badges" },
   { id: "attendance", label: "Attendance" },
   { id: "settings", label: "Settings" }
@@ -291,6 +339,18 @@ export function App() {
   const [newsMessage, setNewsMessage] = useState<string | null>(null);
   const [isNewsLoading, setIsNewsLoading] = useState(false);
   const [isNewsSaving, setIsNewsSaving] = useState(false);
+  const [shopItems, setShopItems] = useState<ShopMerchandiseRecord[]>([]);
+  const [shopName, setShopName] = useState("");
+  const [shopDescription, setShopDescription] = useState("");
+  const [shopItemType, setShopItemType] = useState<ShopMerchandiseType>("uniform");
+  const [shopSex, setShopSex] = useState<ShopMerchandiseSex>("unisex");
+  const [shopSizes, setShopSizes] = useState<ShopMerchandiseSize[]>([]);
+  const [shopImage, setShopImage] = useState<File | null>(null);
+  const [editingShopItemId, setEditingShopItemId] = useState<string | null>(null);
+  const [previewShopItem, setPreviewShopItem] = useState<ShopMerchandiseRecord | null>(null);
+  const [shopMessage, setShopMessage] = useState<string | null>(null);
+  const [isShopLoading, setIsShopLoading] = useState(false);
+  const [isShopSaving, setIsShopSaving] = useState(false);
   const [badges, setBadges] = useState<BadgeRecord[]>([]);
   const [badgeTitle, setBadgeTitle] = useState("");
   const [badgeDescription, setBadgeDescription] = useState("");
@@ -587,6 +647,7 @@ export function App() {
       });
       loadAllGuardians();
       loadNews();
+      loadShopMerchandise();
       loadBadges();
     } else {
       setStudents([]);
@@ -601,6 +662,7 @@ export function App() {
       setGuardianRows([]);
       setAllGuardianRows([]);
       setNewsPosts([]);
+      setShopItems([]);
       setBadges([]);
     }
   }, [session, isAdmin]);
@@ -1634,6 +1696,179 @@ export function App() {
     }
   };
 
+  const loadShopMerchandise = async () => {
+    setShopMessage(null);
+    setIsShopLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("shop_merchandise")
+        .select(
+          "id, name, description, item_type, sex, sizes, image_path, image_name, image_mime_type, is_active, created_by, created_at, updated_at"
+        )
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      const normalized = ((data as any[] | null) ?? []).map((row) => ({
+        ...row,
+        sizes: Array.isArray(row.sizes) ? row.sizes : []
+      })) as ShopMerchandiseRecord[];
+      setShopItems(normalized);
+    } catch (error: any) {
+      setShopMessage(error?.message ?? "Failed to load merchandise.");
+    } finally {
+      setIsShopLoading(false);
+    }
+  };
+
+  const onShopImageChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    setShopImage(file);
+  };
+
+  const toggleShopSize = (size: ShopMerchandiseSize) => {
+    setShopSizes((previous) =>
+      previous.includes(size) ? previous.filter((entry) => entry !== size) : [...previous, size]
+    );
+  };
+
+  const resetShopForm = () => {
+    setEditingShopItemId(null);
+    setShopName("");
+    setShopDescription("");
+    setShopItemType("uniform");
+    setShopSex("unisex");
+    setShopSizes([]);
+    setShopImage(null);
+    const fileInput = document.getElementById("mamute-shop-image") as HTMLInputElement | null;
+    if (fileInput) fileInput.value = "";
+  };
+
+  const startEditShopItem = (item: ShopMerchandiseRecord) => {
+    setEditingShopItemId(item.id);
+    setShopName(item.name);
+    setShopDescription(item.description);
+    setShopItemType(item.item_type);
+    setShopSex(item.sex);
+    setShopSizes(item.sizes ?? []);
+    setShopImage(null);
+    const fileInput = document.getElementById("mamute-shop-image") as HTMLInputElement | null;
+    if (fileInput) fileInput.value = "";
+  };
+
+  const deleteShopItem = async (item: ShopMerchandiseRecord) => {
+    if (!session) return;
+    const confirmed = window.confirm(`Delete "${item.name}" from the shop?`);
+    if (!confirmed) return;
+    setShopMessage(null);
+    try {
+      if (item.image_path) {
+        await supabase.storage.from(shopBucket).remove([item.image_path]);
+      }
+      const { error } = await supabase.from("shop_merchandise").delete().eq("id", item.id);
+      if (error) throw error;
+
+      if (editingShopItemId === item.id) {
+        resetShopForm();
+      }
+      if (previewShopItem?.id === item.id) {
+        setPreviewShopItem(null);
+      }
+      await loadShopMerchandise();
+    } catch (error: any) {
+      setShopMessage(error?.message ?? "Failed to delete merchandise.");
+    }
+  };
+
+  const submitShopItem = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!session) {
+      setShopMessage("Sign in as admin to manage shop merchandise.");
+      return;
+    }
+
+    const trimmedName = shopName.trim();
+    const trimmedDescription = shopDescription.trim();
+    if (!trimmedName || !trimmedDescription) {
+      setShopMessage("Name and description are required.");
+      return;
+    }
+    if (!shopSizes.length) {
+      setShopMessage("Select at least one available size.");
+      return;
+    }
+
+    setIsShopSaving(true);
+    setShopMessage(null);
+
+    const existingItem = editingShopItemId
+      ? shopItems.find((item) => item.id === editingShopItemId) ?? null
+      : null;
+    let imagePath: string | null = existingItem?.image_path ?? null;
+    let imageName: string | null = existingItem?.image_name ?? null;
+    let imageMimeType: string | null = existingItem?.image_mime_type ?? null;
+    let uploadedReplacementPath: string | null = null;
+
+    try {
+      if (shopImage) {
+        const extension = shopImage.name.includes(".") ? shopImage.name.split(".").pop() : "";
+        const filename = `${crypto.randomUUID()}${extension ? `.${extension}` : ""}`;
+        const path = `catalog/${new Date().toISOString().slice(0, 10)}/${filename}`;
+        const { error: uploadError } = await supabase.storage
+          .from(shopBucket)
+          .upload(path, shopImage, {
+            upsert: false,
+            contentType: shopImage.type || undefined
+          });
+        if (uploadError) throw uploadError;
+        imagePath = path;
+        imageName = shopImage.name;
+        imageMimeType = shopImage.type || null;
+        uploadedReplacementPath = path;
+      }
+
+      const payload = {
+        name: trimmedName,
+        description: trimmedDescription,
+        item_type: shopItemType,
+        sex: shopSex,
+        sizes: shopSizes,
+        image_path: imagePath,
+        image_name: imageName,
+        image_mime_type: imageMimeType,
+        is_active: true
+      };
+
+      const { error } = editingShopItemId
+        ? await supabase.from("shop_merchandise").update(payload).eq("id", editingShopItemId)
+        : await supabase.from("shop_merchandise").insert({
+            ...payload,
+            created_by: session.user.id
+          });
+      if (error) throw error;
+
+      if (
+        editingShopItemId &&
+        uploadedReplacementPath &&
+        existingItem?.image_path &&
+        existingItem.image_path !== uploadedReplacementPath
+      ) {
+        await supabase.storage.from(shopBucket).remove([existingItem.image_path]);
+      }
+
+      resetShopForm();
+      await loadShopMerchandise();
+      setShopMessage(editingShopItemId ? "Merchandise updated." : "Merchandise added.");
+    } catch (error: any) {
+      if (uploadedReplacementPath) {
+        await supabase.storage.from(shopBucket).remove([uploadedReplacementPath]);
+      }
+      setShopMessage(
+        error?.message ?? (editingShopItemId ? "Failed to update merchandise." : "Failed to add merchandise.")
+      );
+    } finally {
+      setIsShopSaving(false);
+    }
+  };
+
   const loadBadges = async () => {
     setBadgesMessage(null);
     setIsBadgesLoading(true);
@@ -2420,6 +2655,9 @@ export function App() {
   const previewBadgeUrl = previewBadge?.image_path
     ? supabase.storage.from(badgesBucket).getPublicUrl(previewBadge.image_path).data.publicUrl
     : null;
+  const previewShopItemUrl = previewShopItem?.image_path
+    ? supabase.storage.from(shopBucket).getPublicUrl(previewShopItem.image_path).data.publicUrl
+    : null;
 
   const attendanceSummary = useMemo(
     () => buildAttendanceSummary(attendanceRows),
@@ -3031,6 +3269,274 @@ export function App() {
             ) : (
               <p className="muted">No news posts yet.</p>
             )}
+          </section>
+          ) : null}
+
+          {activeTab === "shop" ? (
+          <section className="panel">
+            <h2>Mamute Shop</h2>
+            <p className="muted">
+              Create and manage merchandise available in the mobile app shop tab.
+            </p>
+
+            <div className="panel nested">
+              <h3>{editingShopItemId ? "Edit Merchandise" : "Add Merchandise"}</h3>
+              <form className="form" onSubmit={submitShopItem}>
+                <label className="field">
+                  <span>Name</span>
+                  <input
+                    className="input"
+                    value={shopName}
+                    onChange={(event) => setShopName(event.target.value)}
+                    placeholder="Mamute Team Hoodie"
+                    required
+                    disabled={!session || isShopSaving}
+                  />
+                </label>
+                <label className="field" style={{ width: "100%" }}>
+                  <span>Description</span>
+                  <textarea
+                    className="input"
+                    rows={3}
+                    value={shopDescription}
+                    onChange={(event) => setShopDescription(event.target.value)}
+                    placeholder="Soft fleece hoodie with embroidered logo."
+                    required
+                    disabled={!session || isShopSaving}
+                  />
+                </label>
+                <label className="field">
+                  <span>Item Type</span>
+                  <select
+                    className="input"
+                    value={shopItemType}
+                    onChange={(event) =>
+                      setShopItemType(event.target.value as ShopMerchandiseType)
+                    }
+                    disabled={!session || isShopSaving}
+                  >
+                    {shopItemTypeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Sex</span>
+                  <select
+                    className="input"
+                    value={shopSex}
+                    onChange={(event) => setShopSex(event.target.value as ShopMerchandiseSex)}
+                    disabled={!session || isShopSaving}
+                  >
+                    {shopSexOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field" style={{ width: "100%" }}>
+                  <span>Sizes Available</span>
+                  <div className="chip-group">
+                    {shopSizeOptions.map((size) => (
+                      <button
+                        key={size}
+                        className={shopSizes.includes(size) ? "chip active" : "chip"}
+                        type="button"
+                        onClick={() => toggleShopSize(size)}
+                        disabled={!session || isShopSaving}
+                      >
+                        {size}
+                      </button>
+                    ))}
+                  </div>
+                </label>
+                <label className="field">
+                  <span>Image (optional)</span>
+                  <input
+                    id="mamute-shop-image"
+                    className="input"
+                    type="file"
+                    accept="image/*,application/pdf,.pdf"
+                    onChange={onShopImageChange}
+                    disabled={!session || isShopSaving}
+                  />
+                  {shopImage ? (
+                    <span className="helper">Selected: {shopImage.name}</span>
+                  ) : editingShopItemId ? (
+                    <span className="helper">Keep current file or choose a replacement.</span>
+                  ) : null}
+                </label>
+                {editingShopItemId ? (
+                  <div className="field">
+                    <span>Current Image</span>
+                    {(() => {
+                      const currentItem = shopItems.find((item) => item.id === editingShopItemId);
+                      if (!currentItem?.image_path) {
+                        return <span className="helper">No image attached.</span>;
+                      }
+                      const currentImageUrl = supabase.storage
+                        .from(shopBucket)
+                        .getPublicUrl(currentItem.image_path).data.publicUrl;
+                      const isImage = (currentItem.image_mime_type ?? "").startsWith("image/");
+                      return (
+                        <div className="badge-file-preview">
+                          {isImage ? (
+                            <img className="badge-thumb" src={currentImageUrl} alt={currentItem.name} />
+                          ) : null}
+                          <div className="badge-file-meta">
+                            <span className="helper">{currentItem.image_name ?? "Stored file"}</span>
+                            <button
+                              className="button secondary"
+                              type="button"
+                              onClick={() => setPreviewShopItem(currentItem)}
+                            >
+                              Preview File
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                ) : null}
+                <div className="form-actions">
+                  <button className="button" type="submit" disabled={!session || isShopSaving}>
+                    {isShopSaving
+                      ? editingShopItemId
+                        ? "Saving..."
+                        : "Adding..."
+                      : editingShopItemId
+                        ? "Save Merchandise"
+                        : "Add Merchandise"}
+                  </button>
+                  {editingShopItemId ? (
+                    <button
+                      className="button secondary"
+                      type="button"
+                      onClick={resetShopForm}
+                      disabled={isShopSaving}
+                    >
+                      Cancel
+                    </button>
+                  ) : null}
+                </div>
+              </form>
+            </div>
+
+            {isShopLoading ? <p className="muted">Loading merchandise...</p> : null}
+            {shopItems.length ? (
+              <div className="results">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Type</th>
+                      <th>Sex</th>
+                      <th>Sizes</th>
+                      <th>Image</th>
+                      <th>Updated</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shopItems.map((item) => (
+                      <tr key={item.id}>
+                        <td>
+                          <strong>{item.name}</strong>
+                          <div className="helper">{item.description}</div>
+                        </td>
+                        <td>{formatDisplayLabel(item.item_type)}</td>
+                        <td>{formatDisplayLabel(item.sex)}</td>
+                        <td>{item.sizes.length ? item.sizes.join(", ") : "-"}</td>
+                        <td>
+                          {item.image_path ? (
+                            <div className="badge-file-preview compact">
+                              {(item.image_mime_type ?? "").startsWith("image/") ? (
+                                <img
+                                  className="badge-thumb compact"
+                                  src={
+                                    supabase.storage.from(shopBucket).getPublicUrl(item.image_path).data
+                                      .publicUrl
+                                  }
+                                  alt={item.name}
+                                />
+                              ) : null}
+                              <div className="badge-file-meta">
+                                <span className="helper">{item.image_name ?? "Stored file"}</span>
+                                <button
+                                  className="button secondary"
+                                  type="button"
+                                  onClick={() => setPreviewShopItem(item)}
+                                >
+                                  Preview
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            "-"
+                          )}
+                        </td>
+                        <td>{new Date(item.updated_at).toLocaleString()}</td>
+                        <td>
+                          <div className="row-actions">
+                            <button
+                              className="button secondary"
+                              type="button"
+                              onClick={() => startEditShopItem(item)}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              className="button secondary"
+                              type="button"
+                              onClick={() => void deleteShopItem(item)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="muted">No merchandise items yet.</p>
+            )}
+            {shopMessage ? <p className="error">{shopMessage}</p> : null}
+            {previewShopItem ? (
+              <div className="modal-backdrop" onClick={() => setPreviewShopItem(null)}>
+                <div className="modal-panel" onClick={(event) => event.stopPropagation()}>
+                  <div className="modal-header">
+                    <div>
+                      <h3>{previewShopItem.name}</h3>
+                      <p className="muted">{previewShopItem.image_name ?? "Stored file"}</p>
+                    </div>
+                    <button
+                      className="button secondary"
+                      type="button"
+                      onClick={() => setPreviewShopItem(null)}
+                    >
+                      Close
+                    </button>
+                  </div>
+                  {previewShopItemUrl &&
+                  (previewShopItem.image_mime_type ?? "").startsWith("image/") ? (
+                    <img
+                      className="badge-preview-image"
+                      src={previewShopItemUrl}
+                      alt={previewShopItem.name}
+                    />
+                  ) : previewShopItemUrl ? (
+                    <iframe className="badge-preview-frame" src={previewShopItemUrl} title={previewShopItem.name} />
+                  ) : (
+                    <p className="muted">No preview available for this file.</p>
+                  )}
+                </div>
+              </div>
+            ) : null}
           </section>
           ) : null}
 

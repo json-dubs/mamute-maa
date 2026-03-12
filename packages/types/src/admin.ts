@@ -263,3 +263,48 @@ export interface CreateMamuteNewsPostRequest {
   attachmentName?: string | null;
   attachmentMimeType?: string | null;
 }
+
+export type ShopMerchandiseType =
+  | "uniform"
+  | "shirt"
+  | "pants"
+  | "shorts"
+  | "accessory"
+  | "training";
+
+export type ShopMerchandiseSex = "male" | "female" | "unisex";
+
+export type ShopMerchandiseSize = "XS" | "S" | "M" | "L" | "XL" | "XXL";
+
+export interface ShopMerchandiseRecord {
+  id: string;
+  name: string;
+  description: string;
+  itemType: ShopMerchandiseType;
+  sex: ShopMerchandiseSex;
+  sizes: ShopMerchandiseSize[];
+  imagePath?: string | null;
+  imageName?: string | null;
+  imageMimeType?: string | null;
+  imageUrl?: string | null;
+  isActive: boolean;
+  createdBy?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateShopMerchandiseRequest {
+  name: string;
+  description: string;
+  itemType: ShopMerchandiseType;
+  sex: ShopMerchandiseSex;
+  sizes: ShopMerchandiseSize[];
+  imagePath?: string | null;
+  imageName?: string | null;
+  imageMimeType?: string | null;
+  isActive?: boolean;
+}
+
+export interface UpdateShopMerchandiseRequest extends CreateShopMerchandiseRequest {
+  id: string;
+}

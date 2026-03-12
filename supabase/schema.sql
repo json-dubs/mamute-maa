@@ -258,6 +258,43 @@ alter table mamute_news
     check (post_type in ('general', 'birthday', 'badge', 'payment'));
 update mamute_news set visibility = 'public' where visibility is null;
 
+-- Shop merchandise catalog
+create table if not exists shop_merchandise (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  description text not null,
+  item_type text not null check (
+    item_type in ('uniform', 'shirt', 'pants', 'shorts', 'accessory', 'training')
+  ),
+  sex text not null check (sex in ('male', 'female', 'unisex')),
+  sizes text[] not null default '{}',
+  image_path text,
+  image_name text,
+  image_mime_type text,
+  is_active boolean not null default true,
+  created_by uuid references admins(user_id),
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create index if not exists idx_shop_merchandise_filters
+  on shop_merchandise (is_active, item_type, sex, created_at desc);
+
+create or replace function touch_shop_merchandise_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists shop_merchandise_touch_updated_at on shop_merchandise;
+create trigger shop_merchandise_touch_updated_at
+before update on shop_merchandise
+for each row execute function touch_shop_merchandise_updated_at();
+
 create or replace function schedule_day_label(p_day int)
 returns text
 language sql
@@ -1021,6 +1058,7 @@ alter table badges enable row level security;
 alter table student_badges enable row level security;
 alter table notifications enable row level security;
 alter table push_tokens enable row level security;
+alter table shop_merchandise enable row level security;
 alter table gym_settings enable row level security;
 alter table student_guardians enable row level security;
 
@@ -1077,6 +1115,11 @@ create policy "admins full access notifications" on notifications
 
 drop policy if exists "admins full access push tokens" on push_tokens;
 create policy "admins full access push tokens" on push_tokens
+  for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
+  with check (exists (select 1 from admins a where a.user_id = auth.uid()));
+
+drop policy if exists "admins full access shop merchandise" on shop_merchandise;
+create policy "admins full access shop merchandise" on shop_merchandise
   for all using (exists (select 1 from admins a where a.user_id = auth.uid()))
   with check (exists (select 1 from admins a where a.user_id = auth.uid()));
 
@@ -1176,6 +1219,10 @@ create policy "student push tokens manage own" on push_tokens
     auth.uid() is not null and profile_id = auth.uid()
   );
 
+drop policy if exists "shop merchandise public read" on shop_merchandise;
+create policy "shop merchandise public read" on shop_merchandise
+  for select using ((auth.role() = 'authenticated' or auth.role() = 'anon') and is_active = true);
+
 do $$
 begin
   begin
@@ -1218,6 +1265,11 @@ values ('mamute-badges', 'mamute-badges', true)
 on conflict (id) do update
 set public = excluded.public;
 
+insert into storage.buckets (id, name, public)
+values ('mamute-shop', 'mamute-shop', true)
+on conflict (id) do update
+set public = excluded.public;
+
 drop policy if exists "admins manage mamute news files" on storage.objects;
 create policy "admins manage mamute news files"
 on storage.objects
@@ -1241,6 +1293,19 @@ using (
 )
 with check (
   bucket_id = 'mamute-badges'
+  and exists (select 1 from admins a where a.user_id = auth.uid())
+);
+
+drop policy if exists "admins manage mamute shop files" on storage.objects;
+create policy "admins manage mamute shop files"
+on storage.objects
+for all
+using (
+  bucket_id = 'mamute-shop'
+  and exists (select 1 from admins a where a.user_id = auth.uid())
+)
+with check (
+  bucket_id = 'mamute-shop'
   and exists (select 1 from admins a where a.user_id = auth.uid())
 );
 
