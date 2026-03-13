@@ -33,7 +33,7 @@ export async function fetchNotifications(profileId: string) {
 export async function sendAnnouncement(payload: {
   title: string;
   body: string;
-  target?: { profileId?: string; classId?: string; role?: string };
+  target?: { profileId?: string; studentId?: string; classId?: string; role?: string };
 }) {
   const supabase = getSupabaseClient();
   const id =

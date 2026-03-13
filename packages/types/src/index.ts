@@ -62,7 +62,7 @@ export type NotificationType = "reminder" | "cancel" | "dues" | "general";
 export interface NotificationPayload {
   id: string;
   type: NotificationType;
-  target: { classId?: string; profileId?: string; role?: Role };
+  target: { classId?: string; profileId?: string; studentId?: string; role?: Role };
   title: string;
   body: string;
   scheduledAt?: string;

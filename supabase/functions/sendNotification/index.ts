@@ -5,7 +5,7 @@ interface PushJob {
   id: string;
   title: string;
   body: string;
-  target: { profileId?: string; classId?: string; role?: string };
+  target: { profileId?: string; studentId?: string; classId?: string; role?: string };
 }
 
 const corsHeaders = {
@@ -77,7 +77,14 @@ Deno.serve(async (req) => {
 
 async function fetchTokens(client: any, target: PushJob["target"]) {
   let query = client.from("push_tokens").select("expo_token, app_variant");
-  if (target.profileId) query = query.eq("profile_id", target.profileId);
+  const profileIds = await resolveTargetProfileIds(client, target);
+  const isTargetedRequest = Boolean(target.profileId || target.studentId);
+  if (isTargetedRequest && !profileIds.length) {
+    return [];
+  }
+  if (profileIds.length) {
+    query = query.in("profile_id", profileIds);
+  }
   const { data, error } = await query;
   if (error) {
     throw new Error(`Failed to load push tokens: ${error.message}`);
@@ -94,6 +101,22 @@ async function fetchTokens(client: any, target: PushJob["target"]) {
     })
   );
   return filtered;
+}
+
+async function resolveTargetProfileIds(client: any, target: PushJob["target"]) {
+  if (target.profileId) return [target.profileId];
+  if (target.studentId) {
+    const { data, error } = await client
+      .from("student_access")
+      .select("user_id")
+      .eq("student_id", target.studentId);
+    if (error) {
+      throw new Error(`Failed to resolve student links: ${error.message}`);
+    }
+    const ids = [...new Set(((data ?? []) as { user_id: string }[]).map((row) => row.user_id))];
+    return ids;
+  }
+  return [];
 }
 
 async function fanOutExpo(tokens: any[], payload: PushJob) {

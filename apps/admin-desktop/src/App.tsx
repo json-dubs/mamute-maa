@@ -2584,33 +2584,9 @@ export function App() {
         }
 
         try {
-          const { data: accessRows, error: accessError } = await supabase
-            .from("student_access")
-            .select("user_id, student_id")
-            .in("student_id", targetStudentIds);
-          if (accessError) throw accessError;
-
-          const studentById = new Map(selectedStudents.map((student) => [student.id, student]));
-          const uniqueUserIds = [
-            ...new Set(
-              ((accessRows ?? []) as { user_id: string; student_id: string }[]).map(
-                (row) => row.user_id
-              )
-            )
-          ];
-          for (const userId of uniqueUserIds) {
-            const studentIdsForUser = ((accessRows ?? []) as { user_id: string; student_id: string }[])
-              .filter((row) => row.user_id === userId)
-              .map((row) => row.student_id);
-            const studentNames = studentIdsForUser
-              .map((studentId) => {
-                const student = studentById.get(studentId);
-                return student
-                  ? [student.first_name, student.last_name].filter(Boolean).join(" ") || "Student"
-                  : null;
-              })
-              .filter(Boolean) as string[];
-            const namesLabel = studentNames.length ? studentNames.join(", ") : "your student";
+          for (const student of selectedStudents) {
+            const studentName =
+              [student.first_name, student.last_name].filter(Boolean).join(" ") || "Student";
             const { error: pushError } = await supabase.functions.invoke("sendNotification", {
               headers: {
                 Authorization: `Bearer ${session.access_token}`
@@ -2619,9 +2595,9 @@ export function App() {
                 id: crypto.randomUUID(),
                 title: `Badge Award: ${badge.title}`,
                 body: truncateNotificationBody(
-                  `${namesLabel} earned the ${badge.title} badge.`
+                  `${studentName} earned the ${badge.title} badge.`
                 ),
-                target: { profileId: userId }
+                target: { studentId: student.id }
               }
             });
             if (pushError) throw pushError;

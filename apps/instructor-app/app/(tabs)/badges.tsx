@@ -298,39 +298,15 @@ export default function BadgesScreen() {
         }
 
         try {
-          const { data: accessRows, error: accessError } = await supabase
-            .from("student_access")
-            .select("user_id, student_id")
-            .in("student_id", targetIds);
-          if (accessError) throw accessError;
-
-          const studentById = new Map(studentsForAssignment.map((student) => [student.id, student]));
-          const uniqueUserIds = [
-            ...new Set(
-              ((accessRows as { user_id: string; student_id: string }[] | null) ?? []).map(
-                (row) => row.user_id
-              )
-            )
-          ];
-
-          for (const userId of uniqueUserIds) {
-            const studentIdsForUser = (
-              (accessRows as { user_id: string; student_id: string }[] | null) ?? []
-            )
-              .filter((row) => row.user_id === userId)
-              .map((row) => row.student_id);
-            const names = studentIdsForUser
-              .map((studentId) => studentById.get(studentId))
-              .filter(Boolean)
-              .map((student) => formatStudentName(student as StudentRow));
-            const namesLabel = names.length ? names.join(", ") : "your student";
+          for (const student of studentsForAssignment) {
+            const studentName = formatStudentName(student);
             const { error: pushError } = await supabase.functions.invoke("sendNotification", {
               headers: { Authorization: `Bearer ${session.access_token}` },
               body: {
                 id: createMessageId(),
                 title: `Badge Award: ${badge.title}`,
-                body: truncateNotificationBody(`${namesLabel} earned the ${badge.title} badge.`),
-                target: { profileId: userId }
+                body: truncateNotificationBody(`${studentName} earned the ${badge.title} badge.`),
+                target: { studentId: student.id }
               }
             });
             if (pushError) throw pushError;
