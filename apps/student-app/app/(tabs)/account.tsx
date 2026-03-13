@@ -3,6 +3,7 @@ import {
   Alert,
   Image,
   ImageSourcePropType,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -15,6 +16,7 @@ import {
   fetchNotifications,
   fetchLinkedStudents,
   getSupabaseClient,
+  registerPushToken,
   registerMobileUser,
   verifyMobileEmail,
   verifyMobileStudentNumbers
@@ -258,6 +260,17 @@ export default function AccountScreen() {
         email: normalizedEmail,
         studentNumbers: verifyResult.students.map((student) => student.studentNumber)
       }, session.access_token);
+
+      if (pushDebug.expoToken) {
+        await registerPushToken({
+          profileId: session.user.id,
+          token: pushDebug.expoToken,
+          platform:
+            Platform.OS === "ios" ? "ios" : Platform.OS === "android" ? "android" : "web",
+          appVariant: pushDebug.appVariant ?? "unknown",
+          updatedAt: new Date().toISOString()
+        });
+      }
 
       await loadLinkedStudents();
 

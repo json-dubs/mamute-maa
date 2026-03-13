@@ -80,7 +80,7 @@ async function fetchTokens(client: any, target: PushJob["target"]) {
   const profileIds = await resolveTargetProfileIds(client, target);
   const isTargetedRequest = Boolean(target.profileId || target.studentId);
   if (isTargetedRequest && !profileIds.length) {
-    return [];
+    throw new Error("No linked mobile accounts found for this private notification target.");
   }
   if (profileIds.length) {
     query = query.in("profile_id", profileIds);
@@ -97,9 +97,16 @@ async function fetchTokens(client: any, target: PushJob["target"]) {
       event: "push_token_variant_filter",
       total: rows.length,
       kept: filtered.length,
+      targeted: isTargetedRequest,
+      profileCount: profileIds.length,
       variants: rows.map((row) => row.app_variant ?? null)
     })
   );
+  if (isTargetedRequest && !filtered.length) {
+    throw new Error(
+      "No push tokens found for linked mobile account(s). Ask user to open Mamute app and re-link."
+    );
+  }
   return filtered;
 }
 
