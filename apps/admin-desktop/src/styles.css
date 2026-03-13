@@ -611,6 +611,54 @@ select.input {
   letter-spacing: 0.08em;
 }
 
+.report-insights-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.report-insight-card {
+  border: 1px solid #2a2a2a;
+  border-radius: 12px;
+  background: #111111;
+  padding: 12px 14px;
+}
+
+.report-insight-card h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.report-insight-card h4 {
+  margin: 10px 0 6px;
+  font-size: 12px;
+  color: #e5e7eb;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.report-insight-card p {
+  margin: 0 0 8px;
+  color: #d1d5db;
+}
+
+.report-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #d1d5db;
+}
+
+.report-list li {
+  margin-bottom: 4px;
+}
+
+.table.compact th,
+.table.compact td {
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
 .schedule-status-pill.cancelled {
   border-color: #dc2626;
   background: #3b0d12;

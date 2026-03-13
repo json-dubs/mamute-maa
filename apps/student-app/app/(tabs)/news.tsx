@@ -60,7 +60,7 @@ export default function NewsScreen() {
       <ScrollView showsVerticalScrollIndicator={false}>
         {posts.length ? (
           posts.map((post) => {
-            const isImage = (post.attachmentMimeType ?? "").startsWith("image/");
+            const isImage = isImageAttachment(post);
             const isBirthdayPost = post.postType === "birthday";
             const attachmentLabel = post.attachmentName ?? "Attachment";
             return (
@@ -110,6 +110,21 @@ function formatDate(value: string) {
     day: "numeric",
     year: "numeric"
   });
+}
+
+function isImageAttachment(post: MamuteNewsPost) {
+  const mimeType = (post.attachmentMimeType ?? "").toLowerCase();
+  if (mimeType.startsWith("image/")) return true;
+
+  const source = [
+    post.attachmentName ?? "",
+    post.attachmentPath ?? "",
+    post.attachmentUrl ?? ""
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  return /\.(png|jpe?g|webp|gif|bmp|heic|heif)(\?|$)/.test(source);
 }
 
 function NewsImage({ uri }: { uri: string }) {

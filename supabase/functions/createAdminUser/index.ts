@@ -5,76 +5,255 @@ interface CreateAdminRequest {
   email: string;
   firstName: string;
   lastName: string;
+  redirectTo?: string;
+}
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS"
+};
+
+export const config = {
+  verify_jwt: false
+};
+
+function jsonResponse(payload: unknown, status = 200) {
+  return Response.json(payload, { status, headers: corsHeaders });
+}
+
+function isAlreadyRegisteredError(message: string) {
+  const value = message.toLowerCase();
+  return (
+    value.includes("already been registered") ||
+    value.includes("already registered") ||
+    value.includes("already exists")
+  );
+}
+
+function isRateLimitError(message: string) {
+  return message.toLowerCase().includes("rate limit");
+}
+
+function buildInviteOptions(firstName: string, lastName: string, redirectTo?: string) {
+  const displayName = `${firstName} ${lastName}`.trim();
+  return {
+    data: {
+      first_name: firstName,
+      last_name: lastName,
+      display_name: displayName,
+      invited_setup_required: true
+    },
+    ...(redirectTo ? { redirectTo } : {})
+  };
+}
+
+async function upsertAdminProfile(
+  supabase: ReturnType<typeof createClient>,
+  params: { userId: string; firstName: string; lastName: string; email: string }
+) {
+  const fullName = `${params.firstName} ${params.lastName}`.trim();
+
+  const primary = await supabase.from("admins").upsert(
+    {
+      user_id: params.userId,
+      first_name: params.firstName,
+      last_name: params.lastName,
+      email: params.email
+    },
+    { onConflict: "user_id" }
+  );
+
+  if (!primary.error) {
+    return { error: null };
+  }
+
+  const message = (primary.error.message ?? "").toLowerCase();
+  const legacyNameSchema =
+    message.includes("first_name") ||
+    message.includes("last_name") ||
+    message.includes("column") ||
+    message.includes("schema cache");
+
+  if (!legacyNameSchema) {
+    return { error: primary.error };
+  }
+
+  const fallbackLegacy = await supabase.from("admins").upsert(
+    {
+      user_id: params.userId,
+      full_name: fullName,
+      email: params.email
+    },
+    { onConflict: "user_id" }
+  );
+
+  if (!fallbackLegacy.error) {
+    return { error: null };
+  }
+
+  const fallbackMinimal = await supabase.from("admins").upsert(
+    {
+      user_id: params.userId,
+      email: params.email
+    },
+    { onConflict: "user_id" }
+  );
+
+  return { error: fallbackMinimal.error ?? fallbackLegacy.error };
 }
 
 Deno.serve(async (req) => {
-  if (req.method !== "POST") {
-    return new Response("Method not allowed", { status: 405 });
-  }
+  try {
+    if (req.method === "OPTIONS") {
+      return new Response("ok", { headers: corsHeaders });
+    }
 
-  const url = Deno.env.get("PROJECT_URL") || Deno.env.get("SUPABASE_URL");
-  const anonKey = Deno.env.get("ANON_KEY") || Deno.env.get("SUPABASE_ANON_KEY");
-  const serviceKey =
-    Deno.env.get("SERVICE_ROLE_KEY") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (req.method !== "POST") {
+      return new Response("Method not allowed", { status: 405, headers: corsHeaders });
+    }
 
-  if (!url || !anonKey || !serviceKey) {
-    return new Response("Missing SUPABASE_URL or keys", { status: 500 });
-  }
+    const url = Deno.env.get("PROJECT_URL") || Deno.env.get("SUPABASE_URL");
+    const anonKey = Deno.env.get("ANON_KEY") || Deno.env.get("SUPABASE_ANON_KEY");
+    const serviceKey =
+      Deno.env.get("SERVICE_ROLE_KEY") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-  const authHeader = req.headers.get("Authorization") ?? "";
-  const authClient = createClient(url, anonKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-    global: { headers: { Authorization: authHeader } }
-  });
-  const { data: authData, error: authError } = await authClient.auth.getUser();
-  if (authError || !authData.user) {
-    return Response.json({ error: "UNAUTHORIZED" }, { status: 401 });
-  }
+    if (!url || !anonKey || !serviceKey) {
+      return new Response("Missing SUPABASE_URL or keys", {
+        status: 500,
+        headers: corsHeaders
+      });
+    }
 
-  const supabase = createClient(url, serviceKey, {
-    auth: { autoRefreshToken: false }
-  });
+    const authHeader = req.headers.get("Authorization") ?? "";
+    const authClient = createClient(url, anonKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+      global: { headers: { Authorization: authHeader } }
+    });
+    const { data: authData, error: authError } = await authClient.auth.getUser();
+    if (authError || !authData.user) {
+      return jsonResponse({ error: "UNAUTHORIZED" }, 401);
+    }
 
-  const { data: isAdmin } = await supabase
-    .from("admins")
-    .select("user_id")
-    .eq("user_id", authData.user.id)
-    .maybeSingle();
-
-  if (!isAdmin) {
-    return Response.json({ error: "FORBIDDEN" }, { status: 403 });
-  }
-
-  const payload = (await req.json()) as CreateAdminRequest;
-  if (!payload?.email || !payload?.firstName || !payload?.lastName) {
-    return Response.json({ error: "MISSING_FIELDS" }, { status: 400 });
-  }
-
-  const { data: created, error: createError } =
-    await supabase.auth.admin.inviteUserByEmail(payload.email, {
-      data: {
-        first_name: payload.firstName.trim(),
-        last_name: payload.lastName.trim()
-      }
+    const supabase = createClient(url, serviceKey, {
+      auth: { autoRefreshToken: false }
     });
 
-  if (createError || !created.user) {
-    return Response.json(
-      { error: createError?.message ?? "CREATE_ADMIN_FAILED" },
-      { status: 400 }
-    );
+    const { data: isAdmin } = await supabase
+      .from("admins")
+      .select("user_id")
+      .eq("user_id", authData.user.id)
+      .maybeSingle();
+
+    if (!isAdmin) {
+      return jsonResponse({ error: "FORBIDDEN" }, 403);
+    }
+
+    const payload = (await req.json()) as CreateAdminRequest;
+    const email = payload?.email?.trim().toLowerCase();
+    const firstName = payload?.firstName?.trim();
+    const lastName = payload?.lastName?.trim();
+    const redirectTo =
+      payload?.redirectTo?.trim() ||
+      Deno.env.get("ADMIN_INVITE_REDIRECT_URL")?.trim() ||
+      undefined;
+
+    if (!email || !firstName || !lastName) {
+      return jsonResponse({ error: "MISSING_FIELDS" }, 400);
+    }
+
+    const invite = () =>
+      supabase.auth.admin.inviteUserByEmail(
+        email,
+        buildInviteOptions(firstName, lastName, redirectTo)
+      );
+
+    let inviteResult = await invite();
+
+    if (inviteResult.error || !inviteResult.data.user) {
+      const inviteMessage = inviteResult.error?.message ?? "CREATE_ADMIN_FAILED";
+
+      if (isAlreadyRegisteredError(inviteMessage)) {
+        const { data: listed, error: listError } = await supabase.auth.admin.listUsers({
+          page: 1,
+          perPage: 1000
+        });
+
+        if (!listError) {
+          const existing = listed.users.find(
+            (item) => (item.email ?? "").toLowerCase() === email
+          );
+
+          if (
+            existing &&
+            !existing.email_confirmed_at &&
+            !existing.last_sign_in_at
+          ) {
+            const { error: deleteError } = await supabase.auth.admin.deleteUser(existing.id);
+            if (!deleteError) {
+              inviteResult = await invite();
+            }
+          }
+        }
+      }
+    }
+
+    let createdUserId = inviteResult.data?.user?.id ?? null;
+    let inviteLink: string | null = null;
+    let delivery: "email" | "manual_link" = "email";
+
+    if (inviteResult.error || !inviteResult.data.user) {
+      const inviteError = inviteResult.error?.message ?? "CREATE_ADMIN_FAILED";
+
+      if (isRateLimitError(inviteError)) {
+        const { data: generated, error: generateError } =
+          await supabase.auth.admin.generateLink({
+            type: "invite",
+            email,
+            options: buildInviteOptions(firstName, lastName, redirectTo)
+          });
+
+        if (generateError || !generated?.user?.id) {
+          return jsonResponse(
+            {
+              error: generateError?.message ?? inviteError
+            },
+            400
+          );
+        }
+
+        createdUserId = generated.user.id;
+        inviteLink = generated.properties?.action_link ?? null;
+        delivery = "manual_link";
+      } else {
+        return jsonResponse(
+          {
+            error: inviteError
+          },
+          400
+        );
+      }
+    }
+
+    if (!createdUserId) {
+      return jsonResponse({ error: "CREATE_ADMIN_FAILED" }, 400);
+    }
+
+    const { error: upsertError } = await upsertAdminProfile(supabase, {
+      userId: createdUserId,
+      firstName,
+      lastName,
+      email
+    });
+
+    if (upsertError) {
+      return jsonResponse({ error: upsertError.message }, 400);
+    }
+
+    return jsonResponse({ id: createdUserId, email, delivery, inviteLink });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "UNEXPECTED_ERROR";
+    return jsonResponse({ error: message }, 500);
   }
-
-  const { error: insertError } = await supabase.from("admins").insert({
-    user_id: created.user.id,
-    first_name: payload.firstName.trim(),
-    last_name: payload.lastName.trim(),
-    email: payload.email
-  });
-
-  if (insertError) {
-    return Response.json({ error: insertError.message }, { status: 400 });
-  }
-
-  return Response.json({ id: created.user.id, email: payload.email });
 });

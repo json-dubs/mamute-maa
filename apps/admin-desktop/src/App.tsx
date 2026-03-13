@@ -99,10 +99,51 @@ type AttendanceSchedule = {
 
 type AttendanceRecord = {
   id: string;
+  schedule_id?: string | null;
   scanned_at: string;
   source: string;
   students?: AttendanceStudent | AttendanceStudent[] | null;
   class_schedules?: AttendanceSchedule | AttendanceSchedule[] | null;
+};
+
+type AttendanceClassAverage = {
+  classType: string;
+  checkIns: number;
+  sessions: number;
+  averagePerSession: number;
+};
+
+type AttendanceDayStat = {
+  dayOfWeek: number;
+  dayLabel: string;
+  checkIns: number;
+};
+
+type AttendanceStudentStat = {
+  studentNumber: number;
+  studentName: string;
+  checkIns: number;
+};
+
+type AttendanceSourceStat = {
+  source: string;
+  checkIns: number;
+  percentage: number;
+};
+
+type AttendanceSummary = {
+  totalCheckIns: number;
+  uniqueStudents: number;
+  uniqueClasses: number;
+  checkInsPerStudentAverage: number;
+  mostPopularClassType: string;
+  leastPopularClassType: string;
+  classAverages: AttendanceClassAverage[];
+  busiestWeekdays: AttendanceDayStat[];
+  slowestWeekdays: AttendanceDayStat[];
+  peakHourWindow: string;
+  topStudents: AttendanceStudentStat[];
+  sourceBreakdown: AttendanceSourceStat[];
 };
 
 type StudentGuardianRecord = {
@@ -248,6 +289,13 @@ export function App() {
   const [password, setPassword] = useState("");
   const [session, setSession] = useState<Session | null>(null);
   const [authMessage, setAuthMessage] = useState<string | null>(null);
+  const [isInviteMode, setIsInviteMode] = useState(false);
+  const [isInviteInitializing, setIsInviteInitializing] = useState(false);
+  const [isInviteSaving, setIsInviteSaving] = useState(false);
+  const [invitePassword, setInvitePassword] = useState("");
+  const [invitePasswordConfirm, setInvitePasswordConfirm] = useState("");
+  const [invitePhone, setInvitePhone] = useState("");
+  const [inviteMessage, setInviteMessage] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isAdminLoading, setIsAdminLoading] = useState(false);
   const [adminCreateFirstName, setAdminCreateFirstName] = useState("");
@@ -385,6 +433,60 @@ export function App() {
     });
     return () => subscription.subscription.unsubscribe();
   }, [supabase]);
+
+  useEffect(() => {
+    const initializeInviteFlow = async () => {
+      const searchParams = new URLSearchParams(window.location.search);
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      const inviteType = hashParams.get("type") ?? searchParams.get("type");
+      const code = searchParams.get("code");
+      const accessToken = hashParams.get("access_token");
+      const refreshToken = hashParams.get("refresh_token");
+      const shouldHandleInvite =
+        inviteType === "invite" ||
+        inviteType === "recovery" ||
+        Boolean(code) ||
+        (Boolean(accessToken) && Boolean(refreshToken));
+
+      if (!shouldHandleInvite) return;
+
+      setIsInviteMode(true);
+      setIsInviteInitializing(true);
+      setInviteMessage("Validating invite link...");
+
+      try {
+        if (code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) throw error;
+        } else if (accessToken && refreshToken) {
+          const { error } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken
+          });
+          if (error) throw error;
+        }
+
+        setInviteMessage("Set your password to finish admin account setup.");
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } catch (error: any) {
+        setInviteMessage(error?.message ?? "Invite link is invalid or expired.");
+      } finally {
+        setIsInviteInitializing(false);
+      }
+    };
+
+    void initializeInviteFlow();
+  }, [supabase]);
+
+  useEffect(() => {
+    if (!session) return;
+    if (isInviteSetupRequired(session)) {
+      setIsInviteMode(true);
+      if (!inviteMessage) {
+        setInviteMessage("Set your password and contact number to finish account setup.");
+      }
+    }
+  }, [session, inviteMessage]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -680,26 +782,104 @@ export function App() {
     await supabase.auth.signOut();
   };
 
+  const completeInviteSetup = async (event: FormEvent) => {
+    event.preventDefault();
+    setInviteMessage(null);
+
+    if (invitePassword.length < 8) {
+      setInviteMessage("Password must be at least 8 characters.");
+      return;
+    }
+
+    if (invitePassword !== invitePasswordConfirm) {
+      setInviteMessage("Passwords do not match.");
+      return;
+    }
+
+    const phone = invitePhone.trim();
+    if (!phone) {
+      setInviteMessage("Contact phone number is required.");
+      return;
+    }
+
+    if (!session) {
+      setInviteMessage("Invite session missing. Please open the invite link again.");
+      return;
+    }
+
+    setIsInviteSaving(true);
+    try {
+      const existing = session.user.user_metadata ?? {};
+      const displayName =
+        (typeof existing.display_name === "string" && existing.display_name.trim()) ||
+        [existing.first_name, existing.last_name]
+          .filter((item) => typeof item === "string" && item.trim())
+          .join(" ")
+          .trim() ||
+        session.user.email?.split("@")[0] ||
+        "Admin";
+
+      const { error } = await supabase.auth.updateUser({
+        password: invitePassword,
+        data: {
+          ...existing,
+          display_name: displayName,
+          contact_phone: phone,
+          invited_setup_required: false
+        }
+      });
+      if (error) throw error;
+
+      setInvitePassword("");
+      setInvitePasswordConfirm("");
+      setInvitePhone("");
+      setInviteMessage("Account setup complete.");
+      setIsInviteMode(false);
+    } catch (error: any) {
+      setInviteMessage(error?.message ?? "Failed to set password.");
+    } finally {
+      setIsInviteSaving(false);
+    }
+  };
+
   const createAdminUser = async (event: FormEvent) => {
     event.preventDefault();
     if (!session) return;
     setAdminCreateMessage(null);
     setIsAdminCreating(true);
     try {
-      const { error } = await supabase.functions.invoke("createAdminUser", {
+      const redirectTo =
+        (import.meta.env.VITE_ADMIN_INVITE_REDIRECT_URL as string | undefined)?.trim() ||
+        undefined;
+      const { data, error } = await supabase.functions.invoke("createAdminUser", {
+        headers: { Authorization: `Bearer ${session.access_token}` },
         body: {
           firstName: adminCreateFirstName.trim(),
           lastName: adminCreateLastName.trim(),
-          email: adminCreateEmail.trim()
+          email: adminCreateEmail.trim(),
+          redirectTo
         }
       });
       if (error) throw error;
       setAdminCreateFirstName("");
       setAdminCreateLastName("");
       setAdminCreateEmail("");
-      setAdminCreateMessage("Invite sent. They will set their password by email.");
+      const result = (data ?? {}) as {
+        delivery?: "email" | "manual_link";
+        inviteLink?: string | null;
+      };
+      if (result.delivery === "manual_link" && result.inviteLink) {
+        setAdminCreateMessage(
+          `Email send limit reached. Share this invite link manually: ${result.inviteLink}`
+        );
+      } else {
+        setAdminCreateMessage("Invite sent. They will set their password by email.");
+      }
     } catch (error: any) {
-      setAdminCreateMessage(error?.message ?? "Failed to create admin");
+      const status = error?.context?.status ? `status ${error.context.status}` : null;
+      const details = await getFunctionInvokeErrorMessage(error);
+      const parts = [error?.message ?? "Failed to create admin", status, details].filter(Boolean);
+      setAdminCreateMessage(parts.join(": "));
     } finally {
       setIsAdminCreating(false);
     }
@@ -1236,7 +1416,7 @@ export function App() {
       let query = supabase
         .from("attendance")
         .select(
-          "id, scanned_at, source, students:student_id(first_name, last_name, student_number), class_schedules:schedule_id(class_type, day_of_week, start_time)"
+          "id, schedule_id, scanned_at, source, students:student_id(first_name, last_name, student_number), class_schedules:schedule_id(class_type, day_of_week, start_time)"
         )
         .order("scanned_at", { ascending: false });
 
@@ -1322,6 +1502,43 @@ export function App() {
         </tr>`;
       })
       .join("");
+    const classAverageRowsHtml = summary.classAverages
+      .slice(0, 8)
+      .map(
+        (item) => `<tr>
+          <td>${escapeHtml(item.classType)}</td>
+          <td>${item.checkIns}</td>
+          <td>${item.sessions}</td>
+          <td>${item.averagePerSession.toFixed(2)}</td>
+        </tr>`
+      )
+      .join("");
+    const topStudentsHtml = summary.topStudents.length
+      ? summary.topStudents
+          .map(
+            (student) =>
+              `<li>${escapeHtml(student.studentName)} (#${student.studentNumber}) - ${student.checkIns} check-ins</li>`
+          )
+          .join("")
+      : "<li>No attendance records in this range.</li>";
+    const sourceBreakdownHtml = summary.sourceBreakdown.length
+      ? summary.sourceBreakdown
+          .map(
+            (source) =>
+              `<li>${escapeHtml(source.source)} - ${source.checkIns} (${source.percentage.toFixed(1)}%)</li>`
+          )
+          .join("")
+      : "<li>No source data available.</li>";
+    const busiestWeekdaysHtml = summary.busiestWeekdays.length
+      ? summary.busiestWeekdays
+          .map((day) => `${escapeHtml(day.dayLabel)} (${day.checkIns})`)
+          .join(", ")
+      : "No weekday check-ins in this range.";
+    const slowestWeekdaysHtml = summary.slowestWeekdays.length
+      ? summary.slowestWeekdays
+          .map((day) => `${escapeHtml(day.dayLabel)} (${day.checkIns})`)
+          .join(", ")
+      : "No weekday check-ins in this range.";
 
     const iframe = document.createElement("iframe");
     iframe.style.position = "fixed";
@@ -1391,6 +1608,44 @@ export function App() {
               border-collapse: collapse;
               margin-top: 12px;
             }
+            .analytics {
+              margin-top: 18px;
+              margin-bottom: 18px;
+            }
+            .analytics h2 {
+              margin: 0 0 8px;
+              font-size: 18px;
+            }
+            .analytics-grid {
+              display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+              gap: 12px;
+            }
+            .analytics-card {
+              border: 1px solid #d1d5db;
+              border-radius: 10px;
+              padding: 12px;
+            }
+            .analytics-card h3 {
+              margin: 0 0 8px;
+              font-size: 14px;
+            }
+            .analytics-card p {
+              margin: 0 0 6px;
+              font-size: 13px;
+            }
+            .analytics-card ul {
+              margin: 0;
+              padding-left: 16px;
+            }
+            .analytics-card li {
+              margin-bottom: 4px;
+              font-size: 13px;
+            }
+            .mini-table th, .mini-table td {
+              font-size: 12px;
+              padding: 6px 4px;
+            }
             th, td {
               text-align: left;
               border-bottom: 1px solid #e5e7eb;
@@ -1421,6 +1676,44 @@ export function App() {
             <div class="summary-card">
               <span class="summary-label">Classes</span>
               <span class="summary-value">${summary.uniqueClasses}</span>
+            </div>
+            <div class="summary-card">
+              <span class="summary-label">Avg / Student</span>
+              <span class="summary-value">${summary.checkInsPerStudentAverage.toFixed(2)}</span>
+            </div>
+          </div>
+          <div class="analytics">
+            <h2>Attendance Insights</h2>
+            <div class="analytics-grid">
+              <section class="analytics-card">
+                <h3>Class Performance</h3>
+                <p><strong>Most popular:</strong> ${escapeHtml(summary.mostPopularClassType)}</p>
+                <p><strong>Least popular:</strong> ${escapeHtml(summary.leastPopularClassType)}</p>
+                <table class="mini-table">
+                  <thead>
+                    <tr>
+                      <th>Class Type</th>
+                      <th>Check-ins</th>
+                      <th>Sessions</th>
+                      <th>Avg / Session</th>
+                    </tr>
+                  </thead>
+                  <tbody>${classAverageRowsHtml}</tbody>
+                </table>
+              </section>
+              <section class="analytics-card">
+                <h3>Day and Time Patterns</h3>
+                <p><strong>Busiest weekdays:</strong> ${busiestWeekdaysHtml}</p>
+                <p><strong>Slowest weekdays:</strong> ${slowestWeekdaysHtml}</p>
+                <p><strong>Peak check-in hour:</strong> ${escapeHtml(summary.peakHourWindow)}</p>
+              </section>
+              <section class="analytics-card">
+                <h3>Student and Channel Trends</h3>
+                <p><strong>Top students:</strong></p>
+                <ul>${topStudentsHtml}</ul>
+                <p><strong>Source breakdown:</strong></p>
+                <ul>${sourceBreakdownHtml}</ul>
+              </section>
             </div>
           </div>
           <table>
@@ -1477,14 +1770,8 @@ export function App() {
     });
 
     const csv = [
-      [
-        "Report Range",
-        attendanceReportLabel ?? "Custom range"
-      ],
-      [
-        "Generated At",
-        new Date().toLocaleString()
-      ],
+      ["Report Range", attendanceReportLabel ?? "Custom range"],
+      ["Generated At", new Date().toLocaleString()],
       [],
       [
         "Check-ins",
@@ -1492,9 +1779,57 @@ export function App() {
         "Students",
         String(attendanceSummary.uniqueStudents),
         "Classes",
-        String(attendanceSummary.uniqueClasses)
+        String(attendanceSummary.uniqueClasses),
+        "Avg / Student",
+        attendanceSummary.checkInsPerStudentAverage.toFixed(2)
       ],
       [],
+      ["Most Popular Class Type", attendanceSummary.mostPopularClassType],
+      ["Least Popular Class Type", attendanceSummary.leastPopularClassType],
+      [
+        "Busiest Weekdays (Mon-Fri)",
+        attendanceSummary.busiestWeekdays.length
+          ? attendanceSummary.busiestWeekdays
+              .map((day) => `${day.dayLabel} (${day.checkIns})`)
+              .join("; ")
+          : "No weekday check-ins"
+      ],
+      [
+        "Slowest Weekdays (Mon-Fri)",
+        attendanceSummary.slowestWeekdays.length
+          ? attendanceSummary.slowestWeekdays
+              .map((day) => `${day.dayLabel} (${day.checkIns})`)
+              .join("; ")
+          : "No weekday check-ins"
+      ],
+      ["Peak Check-in Hour", attendanceSummary.peakHourWindow],
+      [],
+      ["Class Averages by Class Type"],
+      ["Class Type", "Check-ins", "Sessions", "Avg / Session"],
+      ...attendanceSummary.classAverages.map((item) => [
+        item.classType,
+        String(item.checkIns),
+        String(item.sessions),
+        item.averagePerSession.toFixed(2)
+      ]),
+      [],
+      ["Top Students"],
+      ["Student", "Student Number", "Check-ins"],
+      ...attendanceSummary.topStudents.map((student) => [
+        student.studentName,
+        String(student.studentNumber),
+        String(student.checkIns)
+      ]),
+      [],
+      ["Source Breakdown"],
+      ["Source", "Check-ins", "Share (%)"],
+      ...attendanceSummary.sourceBreakdown.map((source) => [
+        source.source,
+        String(source.checkIns),
+        source.percentage.toFixed(1)
+      ]),
+      [],
+      ["Detailed Check-ins"],
       [
         "Scanned At",
         "Student Name",
@@ -2674,7 +3009,8 @@ export function App() {
     );
   };
 
-  const showAuthView = !session || !isAdmin;
+  const signedInDisplayName = getSessionDisplayName(session);
+  const showAuthView = isInviteMode || !session || !isAdmin;
 
   return (
     <div className={showAuthView ? "app auth-app" : "app"}>
@@ -2692,13 +3028,79 @@ export function App() {
           <section className="panel auth-panel">
             <div className="auth-panel-copy">
               <p className="eyebrow">Admin Portal</p>
-              <h2>Sign In</h2>
+              <h2>{isInviteMode ? "Create Password" : "Sign In"}</h2>
               <p className="muted">
-                Access scheduling, student records, attendance, news, and badge management.
+                {isInviteMode
+                  ? "Finish your admin invite by setting a password and contact number."
+                  : "Access scheduling, student records, attendance, news, and badge management."}
               </p>
             </div>
 
-            {session ? (
+            {isInviteMode ? (
+              <div className="auth-state">
+                {isInviteInitializing ? (
+                  <p className="muted">Validating invite...</p>
+                ) : (
+                  <form className="form auth-form" onSubmit={completeInviteSetup}>
+                    <label className="field">
+                      <span>New Password</span>
+                      <input
+                        className="input"
+                        type="password"
+                        value={invitePassword}
+                        onChange={(event) => setInvitePassword(event.target.value)}
+                        placeholder="Create a password"
+                        required
+                        minLength={8}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Confirm Password</span>
+                      <input
+                        className="input"
+                        type="password"
+                        value={invitePasswordConfirm}
+                        onChange={(event) => setInvitePasswordConfirm(event.target.value)}
+                        placeholder="Confirm password"
+                        required
+                        minLength={8}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Contact Phone Number</span>
+                      <input
+                        className="input"
+                        type="tel"
+                        value={invitePhone}
+                        onChange={(event) => setInvitePhone(event.target.value)}
+                        placeholder="(555) 123-4567"
+                        required
+                      />
+                    </label>
+                    <button
+                      className="button auth-submit"
+                      type="submit"
+                      disabled={isInviteSaving || isInviteInitializing}
+                    >
+                      {isInviteSaving ? "Saving..." : "Create Password"}
+                    </button>
+                  </form>
+                )}
+                {inviteMessage ? <p className="muted">{inviteMessage}</p> : null}
+                <button
+                  className="button secondary auth-secondary"
+                  type="button"
+                  onClick={() => {
+                    setIsInviteMode(false);
+                    setInviteMessage(null);
+                    setInvitePassword("");
+                    setInvitePasswordConfirm("");
+                  }}
+                >
+                  Back to Sign In
+                </button>
+              </div>
+            ) : session ? (
               <div className="auth-state">
                 <p className="muted">Signed in as {session.user.email}</p>
                 {isAdminLoading ? <p className="muted">Checking admin access...</p> : null}
@@ -2759,6 +3161,7 @@ export function App() {
                 </div>
               </div>
               <div className="admin-masthead-actions">
+                <span className="muted">Signed in as {signedInDisplayName}</span>
                 <button className="button secondary" onClick={signOut}>
                   Sign out
                 </button>
@@ -4458,6 +4861,93 @@ export function App() {
                   <span className="report-summary-label">Classes</span>
                   <strong>{attendanceSummary.uniqueClasses}</strong>
                 </div>
+                <div className="report-summary-card">
+                  <span className="report-summary-label">Avg / Student</span>
+                  <strong>{attendanceSummary.checkInsPerStudentAverage.toFixed(2)}</strong>
+                </div>
+              </div>
+              <div className="report-insights-grid">
+                <section className="report-insight-card">
+                  <h3>Class Insights</h3>
+                  <p>
+                    <strong>Most popular:</strong> {attendanceSummary.mostPopularClassType}
+                  </p>
+                  <p>
+                    <strong>Least popular:</strong> {attendanceSummary.leastPopularClassType}
+                  </p>
+                  <div className="results">
+                    <table className="table compact">
+                      <thead>
+                        <tr>
+                          <th>Class Type</th>
+                          <th>Check-ins</th>
+                          <th>Sessions</th>
+                          <th>Avg / Session</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {attendanceSummary.classAverages.slice(0, 6).map((item) => (
+                          <tr key={item.classType}>
+                            <td>{item.classType}</td>
+                            <td>{item.checkIns}</td>
+                            <td>{item.sessions}</td>
+                            <td>{item.averagePerSession.toFixed(2)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+                <section className="report-insight-card">
+                  <h3>Day and Time Insights</h3>
+                  <p>
+                    <strong>Busiest weekdays (Mon-Fri):</strong>{" "}
+                    {attendanceSummary.busiestWeekdays.length
+                      ? attendanceSummary.busiestWeekdays
+                          .map((day) => `${day.dayLabel} (${day.checkIns})`)
+                          .join(", ")
+                      : "No weekday check-ins in this range."}
+                  </p>
+                  <p>
+                    <strong>Slowest weekdays (Mon-Fri):</strong>{" "}
+                    {attendanceSummary.slowestWeekdays.length
+                      ? attendanceSummary.slowestWeekdays
+                          .map((day) => `${day.dayLabel} (${day.checkIns})`)
+                          .join(", ")
+                      : "No weekday check-ins in this range."}
+                  </p>
+                  <p>
+                    <strong>Peak check-in hour:</strong> {attendanceSummary.peakHourWindow}
+                  </p>
+                </section>
+                <section className="report-insight-card">
+                  <h3>Student and Source Trends</h3>
+                  <h4>Top Students</h4>
+                  <ul className="report-list">
+                    {attendanceSummary.topStudents.length ? (
+                      attendanceSummary.topStudents.map((student) => (
+                        <li key={student.studentNumber}>
+                          {student.studentName} (#{student.studentNumber}) - {student.checkIns}{" "}
+                          check-ins
+                        </li>
+                      ))
+                    ) : (
+                      <li>No attendance records in this range.</li>
+                    )}
+                  </ul>
+                  <h4>Source Mix</h4>
+                  <ul className="report-list">
+                    {attendanceSummary.sourceBreakdown.length ? (
+                      attendanceSummary.sourceBreakdown.map((source) => (
+                        <li key={source.source}>
+                          {source.source}: {source.checkIns} ({source.percentage.toFixed(1)}%)
+                        </li>
+                      ))
+                    ) : (
+                      <li>No source data in this range.</li>
+                    )}
+                  </ul>
+                </section>
               </div>
             </div>
             {attendanceMessage ? <p className="error">{attendanceMessage}</p> : null}
@@ -4488,7 +4978,7 @@ export function App() {
                         ? `${studentDisplayName || "Student"} (#${student.student_number})`
                         : "Unknown";
                       const classLabel = schedule
-                        ? `${dayOptions.find((d) => d.value === schedule.day_of_week)?.label ?? ""} ${schedule.start_time} - ${schedule.class_type}`
+                        ? `${dayOptions.find((d) => d.value === schedule.day_of_week)?.label ?? ""} ${schedule.start_time} - ${formatDisplayLabel(schedule.class_type)}`
                         : "N/A";
                       return (
                         <tr key={row.id}>
@@ -4528,30 +5018,193 @@ function calculateAgeFromBirthDate(birthDate: string | null | undefined) {
   return age >= 0 ? age : null;
 }
 
-function buildAttendanceSummary(rows: AttendanceRecord[]) {
+function buildAttendanceSummary(rows: AttendanceRecord[]): AttendanceSummary {
+  if (!rows.length) {
+    return {
+      totalCheckIns: 0,
+      uniqueStudents: 0,
+      uniqueClasses: 0,
+      checkInsPerStudentAverage: 0,
+      mostPopularClassType: "N/A",
+      leastPopularClassType: "N/A",
+      classAverages: [],
+      busiestWeekdays: [],
+      slowestWeekdays: [],
+      peakHourWindow: "N/A",
+      topStudents: [],
+      sourceBreakdown: []
+    };
+  }
+
   const uniqueStudents = new Set<string>();
   const uniqueClasses = new Set<string>();
+  const classCheckInCounts = new Map<string, number>();
+  const classSessions = new Map<string, Set<string>>();
+  const weekdayCounts = new Map<number, number>([
+    [1, 0],
+    [2, 0],
+    [3, 0],
+    [4, 0],
+    [5, 0]
+  ]);
+  const hourlyCounts = new Map<number, number>();
+  const studentCounts = new Map<
+    number,
+    { studentNumber: number; studentName: string; checkIns: number }
+  >();
+  const sourceCounts = new Map<string, number>();
 
   rows.forEach((row) => {
-    const student = Array.isArray(row.students) ? row.students[0] : row.students;
-    const schedule = Array.isArray(row.class_schedules)
-      ? row.class_schedules[0]
-      : row.class_schedules;
+    const student = getAttendanceStudent(row);
+    const schedule = getAttendanceSchedule(row);
+    const classType = schedule?.class_type
+      ? formatDisplayLabel(schedule.class_type)
+      : "Unknown";
+
+    classCheckInCounts.set(classType, (classCheckInCounts.get(classType) ?? 0) + 1);
+
+    if (!classSessions.has(classType)) {
+      classSessions.set(classType, new Set<string>());
+    }
+    classSessions.get(classType)?.add(buildAttendanceSessionKey(row, schedule));
 
     if (student?.student_number) {
       uniqueStudents.add(String(student.student_number));
+      const studentName = [student.first_name, student.last_name].filter(Boolean).join(" ");
+      const current = studentCounts.get(student.student_number);
+      if (current) {
+        current.checkIns += 1;
+      } else {
+        studentCounts.set(student.student_number, {
+          studentNumber: student.student_number,
+          studentName: studentName || "Student",
+          checkIns: 1
+        });
+      }
     }
 
     if (schedule) {
       uniqueClasses.add(`${schedule.day_of_week}-${schedule.start_time}-${schedule.class_type}`);
     }
+
+    const dayOfWeek =
+      typeof schedule?.day_of_week === "number"
+        ? schedule.day_of_week
+        : new Date(row.scanned_at).getDay();
+    if (weekdayCounts.has(dayOfWeek)) {
+      weekdayCounts.set(dayOfWeek, (weekdayCounts.get(dayOfWeek) ?? 0) + 1);
+    }
+
+    const scannedAt = new Date(row.scanned_at);
+    if (!Number.isNaN(scannedAt.getTime())) {
+      const hour = scannedAt.getHours();
+      hourlyCounts.set(hour, (hourlyCounts.get(hour) ?? 0) + 1);
+    }
+
+    const source = capitalizeLabel((row.source || "unknown").trim());
+    sourceCounts.set(source, (sourceCounts.get(source) ?? 0) + 1);
   });
+
+  const classAverages: AttendanceClassAverage[] = [...classCheckInCounts.entries()]
+    .map(([classType, checkIns]) => {
+      const sessions = classSessions.get(classType)?.size || 0;
+      const denominator = sessions > 0 ? sessions : 1;
+      return {
+        classType,
+        checkIns,
+        sessions,
+        averagePerSession: checkIns / denominator
+      };
+    })
+    .sort((a, b) => b.checkIns - a.checkIns || a.classType.localeCompare(b.classType));
+
+  const rankedClasses = classAverages.filter((item) => item.classType !== "Unknown");
+  const mostPopularClassType = rankedClasses.length ? rankedClasses[0].classType : "N/A";
+  const leastPopularClassType = rankedClasses.length
+    ? rankedClasses[rankedClasses.length - 1].classType
+    : "N/A";
+
+  const weekdayStats: AttendanceDayStat[] = [...weekdayCounts.entries()]
+    .map(([dayOfWeek, checkIns]) => ({
+      dayOfWeek,
+      dayLabel: dayOptions.find((option) => option.value === dayOfWeek)?.label ?? "Unknown",
+      checkIns
+    }))
+    .filter((item) => item.checkIns > 0);
+
+  const busiestWeekdays = [...weekdayStats]
+    .sort((a, b) => b.checkIns - a.checkIns || a.dayOfWeek - b.dayOfWeek)
+    .slice(0, 2);
+  const slowestWeekdays = [...weekdayStats]
+    .sort((a, b) => a.checkIns - b.checkIns || a.dayOfWeek - b.dayOfWeek)
+    .slice(0, 2);
+
+  const topStudents: AttendanceStudentStat[] = [...studentCounts.values()]
+    .sort((a, b) => b.checkIns - a.checkIns || a.studentNumber - b.studentNumber)
+    .slice(0, 5);
+
+  const sourceBreakdown: AttendanceSourceStat[] = [...sourceCounts.entries()]
+    .map(([source, checkIns]) => ({
+      source,
+      checkIns,
+      percentage: rows.length ? (checkIns / rows.length) * 100 : 0
+    }))
+    .sort((a, b) => b.checkIns - a.checkIns || a.source.localeCompare(b.source));
+
+  const peakHourEntry = [...hourlyCounts.entries()].sort(
+    (a, b) => b[1] - a[1] || a[0] - b[0]
+  )[0];
 
   return {
     totalCheckIns: rows.length,
     uniqueStudents: uniqueStudents.size,
-    uniqueClasses: uniqueClasses.size
+    uniqueClasses: uniqueClasses.size,
+    checkInsPerStudentAverage: uniqueStudents.size ? rows.length / uniqueStudents.size : 0,
+    mostPopularClassType,
+    leastPopularClassType,
+    classAverages,
+    busiestWeekdays,
+    slowestWeekdays,
+    peakHourWindow: peakHourEntry ? formatHourWindow(peakHourEntry[0]) : "N/A",
+    topStudents,
+    sourceBreakdown
   };
+}
+
+function getAttendanceStudent(row: AttendanceRecord) {
+  return Array.isArray(row.students) ? row.students[0] : row.students;
+}
+
+function getAttendanceSchedule(row: AttendanceRecord) {
+  return Array.isArray(row.class_schedules) ? row.class_schedules[0] : row.class_schedules;
+}
+
+function buildAttendanceSessionKey(
+  row: AttendanceRecord,
+  schedule: AttendanceSchedule | null | undefined
+) {
+  const scannedAt = new Date(row.scanned_at);
+  const scannedDate = Number.isNaN(scannedAt.getTime())
+    ? row.scanned_at.slice(0, 10)
+    : scannedAt.toISOString().slice(0, 10);
+  const scheduleKey = row.schedule_id
+    ? row.schedule_id
+    : schedule
+      ? `${schedule.day_of_week}-${schedule.start_time}-${schedule.class_type}`
+      : "no-schedule";
+
+  return `${scheduleKey}-${scannedDate}`;
+}
+
+function formatHourWindow(hour: number) {
+  return `${formatHourLabel(hour)} - ${formatHourLabel((hour + 1) % 24)}`;
+}
+
+function formatHourLabel(hour: number) {
+  const normalizedHour = ((hour % 24) + 24) % 24;
+  const meridiem = normalizedHour >= 12 ? "PM" : "AM";
+  const hour12 = normalizedHour % 12 || 12;
+  return `${hour12}:00 ${meridiem}`;
 }
 
 function formatDateInput(date: Date) {
@@ -4565,6 +5218,25 @@ function getRelativeDate(offsetDays: number) {
   const date = new Date();
   date.setDate(date.getDate() + offsetDays);
   return date;
+}
+
+function isInviteSetupRequired(session: Session | null) {
+  if (!session) return false;
+  const metadata = session.user.user_metadata;
+  return metadata?.invited_setup_required === true;
+}
+
+function getSessionDisplayName(session: Session | null) {
+  if (!session) return "Admin";
+  const metadata = session.user.user_metadata ?? {};
+  const displayName =
+    (typeof metadata.display_name === "string" && metadata.display_name.trim()) ||
+    [metadata.first_name, metadata.last_name]
+      .filter((item) => typeof item === "string" && item.trim())
+      .join(" ")
+      .trim();
+  if (displayName) return displayName;
+  return session.user.email ?? "Admin";
 }
 
 function toStartOfDayIso(dateString: string) {

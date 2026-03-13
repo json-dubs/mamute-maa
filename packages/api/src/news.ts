@@ -2,12 +2,28 @@ import { getSupabaseClient } from "./client";
 import { CreateMamuteNewsPostRequest, MamuteNewsPost } from "@mamute/types";
 
 const NEWS_BUCKET = "mamute-news";
+const BADGES_BUCKET = "mamute-badges";
+
+function resolveAttachmentBucket(row: any): string {
+  const explicitBucket = row.attachment_bucket ?? row.attachmentBucket ?? null;
+  if (typeof explicitBucket === "string" && explicitBucket.trim()) {
+    return explicitBucket.trim();
+  }
+
+  const postType = (row.post_type ?? row.postType ?? "").toString().toLowerCase();
+  if (postType === "badge") {
+    return BADGES_BUCKET;
+  }
+
+  return NEWS_BUCKET;
+}
 
 function normalizeNewsRow(row: any): MamuteNewsPost {
   const supabase = getSupabaseClient();
   const attachmentPath = row.attachment_path ?? row.attachmentPath ?? null;
+  const attachmentBucket = resolveAttachmentBucket(row);
   const attachmentUrl = attachmentPath
-    ? supabase.storage.from(NEWS_BUCKET).getPublicUrl(attachmentPath).data.publicUrl
+    ? supabase.storage.from(attachmentBucket).getPublicUrl(attachmentPath).data.publicUrl
     : null;
   return {
     id: row.id,

@@ -10,6 +10,7 @@ import {
   VerifyMobileEmailResponse,
   VerifyMobileStudentNumbersRequest,
   VerifyMobileStudentNumbersResponse,
+  StudentBadgeSummary,
   VerifyGuardianLinkRequest,
   VerifyGuardianLinkResponse,
   VerifyStudentLinkRequest,
@@ -17,6 +18,29 @@ import {
 } from "@mamute/types";
 
 const BADGES_BUCKET = "mamute-badges";
+type StudentGuardianRow = {
+  guardian_first_name?: string | null;
+  guardian_last_name?: string | null;
+};
+
+type BadgeDetailRow = {
+  id?: string;
+  title?: string;
+  description?: string | null;
+  image_path?: string | null;
+  image_name?: string | null;
+  image_mime_type?: string | null;
+  milestone_count?: number | null;
+  created_at?: string;
+};
+
+type StudentBadgeRow = {
+  id: string;
+  visibility?: string | null;
+  assigned_source?: string | null;
+  assigned_at?: string | null;
+  badges?: BadgeDetailRow | null;
+};
 
 function resolveFunctionError(error: any, fallback: string): Error {
   const status = error?.context?.status;
@@ -97,25 +121,25 @@ export async function fetchLinkedStudents(): Promise<LinkedStudentSummary[]> {
   return (
     data?.map((row: any) => {
       const guardians = Array.isArray(row.students?.student_guardians)
-        ? row.students.student_guardians
+        ? (row.students.student_guardians as StudentGuardianRow[])
         : [];
       const guardianNames = [
         ...new Set(
           guardians
-            .map((guardian: any) =>
+            .map((guardian) =>
               [guardian.guardian_first_name, guardian.guardian_last_name]
                 .filter(Boolean)
                 .join(" ")
                 .trim()
             )
-            .filter((name: string) => Boolean(name))
+            .filter((name): name is string => Boolean(name))
         )
       ];
       const badgeRows = Array.isArray(row.students?.student_badges)
-        ? row.students.student_badges
+        ? (row.students.student_badges as StudentBadgeRow[])
         : [];
       const badges = badgeRows
-        .map((badgeRow: any) => {
+        .map((badgeRow): StudentBadgeSummary | null => {
           const badge = badgeRow.badges ?? null;
           if (!badge?.id) return null;
           const imagePath = badge.image_path ?? null;
@@ -125,7 +149,7 @@ export async function fetchLinkedStudents(): Promise<LinkedStudentSummary[]> {
           return {
             id: badgeRow.id,
             badgeId: badge.id,
-            title: badge.title,
+            title: badge.title ?? "Badge",
             description: badge.description ?? null,
             milestoneCount:
               typeof badge.milestone_count === "number" ? badge.milestone_count : null,
@@ -133,17 +157,16 @@ export async function fetchLinkedStudents(): Promise<LinkedStudentSummary[]> {
             imageName: badge.image_name ?? null,
             imageMimeType: badge.image_mime_type ?? null,
             imageUrl,
-            visibility: badgeRow.visibility ?? "public",
-            assignedSource: badgeRow.assigned_source ?? "manual",
-            assignedAt: badgeRow.assigned_at ?? badge.created_at
+            visibility:
+              badgeRow.visibility === "private" ? "private" : "public",
+            assignedSource:
+              badgeRow.assigned_source === "auto" ? "auto" : "manual",
+            assignedAt: badgeRow.assigned_at ?? badge.created_at ?? new Date(0).toISOString()
           };
         })
-        .filter(
-          (badge): badge is NonNullable<LinkedStudentSummary["badges"]>[number] =>
-            Boolean(badge)
-        )
+        .filter((badge): badge is StudentBadgeSummary => badge !== null)
         .sort(
-          (a, b) =>
+          (a: StudentBadgeSummary, b: StudentBadgeSummary) =>
             new Date(b.assignedAt).getTime() - new Date(a.assignedAt).getTime()
         );
       return {

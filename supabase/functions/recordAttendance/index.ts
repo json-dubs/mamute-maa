@@ -32,11 +32,28 @@ interface ScheduleRow {
   timezone: string;
 }
 
+interface StudentAccessRow {
+  user_id: string;
+  student_id: string;
+}
+
+interface PushTokenRow {
+  profile_id: string;
+  expo_token: string;
+  app_variant: string | null;
+}
+
+interface AdminCheckInReminder {
+  student: StudentRow;
+  schedule: ScheduleRow;
+}
+
 const DEFAULT_TIMEZONE = "America/Toronto";
 const MOBILE_LATE_CHECKIN_LIMIT_MINUTES = -30;
 const MOBILE_EARLY_CHECKIN_LIMIT_MINUTES = 4 * 60;
 const FRONTDESK_LATE_CHECKIN_LIMIT_MINUTES = -30;
 const FRONTDESK_EARLY_CHECKIN_LIMIT_MINUTES = 4 * 60;
+const CHECKIN_REMINDER_EXPIRY_HOURS = 24;
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -162,6 +179,7 @@ Deno.serve(async (req) => {
     }
 
     const results = [];
+    const adminReminders: AdminCheckInReminder[] = [];
     for (const student of students as StudentRow[]) {
       const blocked = student.membership_standing !== "active";
       if (payload.source === "mobile" && blocked) {
@@ -201,6 +219,20 @@ Deno.serve(async (req) => {
         blocked,
         attendance: normalizeAttendance(attendance)
       });
+
+      if (payload.source === "frontdesk") {
+        adminReminders.push({ student, schedule });
+      }
+    }
+
+    if (payload.source === "frontdesk" && adminReminders.length) {
+      try {
+        await sendAdminCheckInReminders(supabase, adminReminders);
+      } catch (reminderError) {
+        const message =
+          reminderError instanceof Error ? reminderError.message : "Unknown reminder error";
+        console.error(`Failed to send admin check-in reminders: ${message}`);
+      }
     }
 
     return Response.json(
@@ -447,6 +479,144 @@ function normalizeAttendance(row: any) {
     source: row.source,
     locationVerified: row.location_verified ?? row.locationVerified
   };
+}
+
+async function sendAdminCheckInReminders(
+  client: any,
+  reminders: AdminCheckInReminder[]
+) {
+  if (!reminders.length) return;
+
+  const createdAt = new Date();
+  const expiresAt = new Date(
+    createdAt.getTime() + CHECKIN_REMINDER_EXPIRY_HOURS * 60 * 60 * 1000
+  ).toISOString();
+
+  const postRows = reminders.map((item) => ({
+    title: "Check-In Reminder",
+    description: buildCheckInReminderBody(item.schedule),
+    visibility: "private",
+    post_type: "general",
+    student_id: item.student.id,
+    expires_at: expiresAt,
+    created_by: null
+  }));
+  const { error: postError } = await client.from("mamute_news").insert(postRows);
+  if (postError) {
+    console.error(`Failed to insert check-in reminder news posts: ${postError.message}`);
+  }
+
+  const studentIds = [...new Set(reminders.map((item) => item.student.id))];
+  const { data: links, error: linkError } = await client
+    .from("student_access")
+    .select("user_id, student_id")
+    .in("student_id", studentIds);
+
+  if (linkError) {
+    console.error(`Failed to load student links for reminders: ${linkError.message}`);
+    return;
+  }
+
+  const accessRows = (links ?? []) as StudentAccessRow[];
+  if (!accessRows.length) return;
+
+  const reminderByStudentId = new Map(reminders.map((item) => [item.student.id, item]));
+  const notificationRows = accessRows
+    .map((link) => {
+      const reminder = reminderByStudentId.get(link.student_id);
+      if (!reminder) return null;
+      const title = "Check-In Reminder";
+      const body = buildCheckInReminderBody(reminder.schedule);
+      return {
+        type: "reminder",
+        target: {
+          profileId: link.user_id,
+          studentId: reminder.student.id,
+          studentNumber: reminder.student.student_number
+        },
+        title,
+        body,
+        scheduled_at: createdAt.toISOString(),
+        created_by: null
+      };
+    })
+    .filter(Boolean);
+
+  if (notificationRows.length) {
+    const { error: notificationError } = await client
+      .from("notifications")
+      .insert(notificationRows);
+    if (notificationError) {
+      console.error(`Failed to insert reminder notifications: ${notificationError.message}`);
+    }
+  }
+
+  const profileIds = [...new Set(accessRows.map((row) => row.user_id))];
+  const { data: tokenRows, error: tokenError } = await client
+    .from("push_tokens")
+    .select("profile_id, expo_token, app_variant")
+    .in("profile_id", profileIds);
+
+  if (tokenError) {
+    console.error(`Failed to load push tokens for reminders: ${tokenError.message}`);
+    return;
+  }
+
+  const allowedVariants = new Set(["standalone", "bare", null, ""]);
+  const tokens = ((tokenRows ?? []) as PushTokenRow[]).filter((row) =>
+    allowedVariants.has(row.app_variant)
+  );
+  if (!tokens.length) return;
+
+  const tokensByProfile = new Map<string, string[]>();
+  for (const row of tokens) {
+    const list = tokensByProfile.get(row.profile_id) ?? [];
+    list.push(row.expo_token);
+    tokensByProfile.set(row.profile_id, list);
+  }
+
+  const pushMessages = accessRows.flatMap((link) => {
+    const reminder = reminderByStudentId.get(link.student_id);
+    const profileTokens = tokensByProfile.get(link.user_id) ?? [];
+    if (!reminder || !profileTokens.length) return [];
+    return profileTokens.map((token) => ({
+      to: token,
+      title: "Check-In Reminder",
+      body: buildCheckInReminderBody(reminder.schedule)
+    }));
+  });
+
+  if (!pushMessages.length) return;
+
+  const response = await fetch("https://exp.host/--/api/v2/push/send", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    body: JSON.stringify(pushMessages)
+  });
+
+  if (!response.ok) {
+    const responseText = await response.text();
+    console.error(
+      `Failed to send check-in reminder push notifications: ${response.status} ${response.statusText} ${responseText}`
+    );
+  }
+}
+
+function buildCheckInReminderBody(schedule: ScheduleRow) {
+  const classLabel = formatClassType(schedule.class_type);
+  const timeLabel = `${schedule.start_time.slice(0, 5)}-${schedule.end_time.slice(0, 5)}`;
+  return `You were checked in for ${classLabel} (${timeLabel}). Please check in with the Mamute app when you arrive to class next time.`;
+}
+
+function formatClassType(value: string) {
+  return value
+    .split("-")
+    .filter(Boolean)
+    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
+    .join(" ");
 }
 
 async function resolveUserId(authHeader: string) {

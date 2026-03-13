@@ -5,18 +5,19 @@ export async function fetchSchedules(options?: {
   includeCancelled?: boolean;
 }): Promise<ClassScheduleTemplate[]> {
   const supabase = getSupabaseClient();
-  let queryWithInstructor = supabase
-    .from("class_schedules")
-    .select(
-      "id, class_type, instructor_id, day_of_week, start_time, end_time, timezone, is_active, instructors:instructor_id(first_name, last_name)"
-    )
+  let queryWithInstructor = supabase.from("class_schedules").select(
+    "id, class_type, instructor_id, day_of_week, start_time, end_time, timezone, is_active, instructors:instructor_id(first_name, last_name)"
+  );
+  queryWithInstructor = queryWithInstructor
     .order("day_of_week", { ascending: true })
     .order("start_time", { ascending: true });
   if (!options?.includeCancelled) {
     queryWithInstructor = queryWithInstructor.eq("is_active", true);
   }
 
-  let { data, error } = await queryWithInstructor;
+  const primaryResult = await queryWithInstructor;
+  let data: any[] | null = (primaryResult.data as any[] | null) ?? null;
+  let error: any = primaryResult.error;
   if (error) {
     let fallbackQuery = supabase
       .from("class_schedules")

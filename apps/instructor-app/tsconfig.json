@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "strict": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"],
+      "@mamute/ui": ["../../packages/ui/src"],
+      "@mamute/utils": ["../../packages/utils/src"],
+      "@mamute/types": ["../../packages/types/src"],
+      "@mamute/config": ["../../packages/config/src"],
+      "@mamute/api": ["../../packages/api/src"]
+    },
+    "types": ["expo-router/paths"]
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts"
+  ]
+}
