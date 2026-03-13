@@ -82,9 +82,18 @@ async function fetchTokens(client: any, target: PushJob["target"]) {
   if (error) {
     throw new Error(`Failed to load push tokens: ${error.message}`);
   }
-  return ((data ?? []) as { expo_token: string; app_variant?: string | null }[]).filter(
-    (row) => row.app_variant === "standalone" || row.app_variant === "bare"
+  const allowedVariants = new Set(["standalone", "bare", null, "", "unknown"]);
+  const rows = (data ?? []) as { expo_token: string; app_variant?: string | null }[];
+  const filtered = rows.filter((row) => allowedVariants.has(row.app_variant ?? null));
+  console.log(
+    JSON.stringify({
+      event: "push_token_variant_filter",
+      total: rows.length,
+      kept: filtered.length,
+      variants: rows.map((row) => row.app_variant ?? null)
+    })
   );
+  return filtered;
 }
 
 async function fanOutExpo(tokens: any[], payload: PushJob) {

@@ -174,6 +174,14 @@ export default function ClassesScreen() {
         : await supabase.from("class_schedules").insert({ ...payload, is_active: true });
       if (error) throw error;
 
+      const dayLabel = dayOptions.find((day) => day.value === dayOfWeek)?.label ?? "day";
+      await sendSchedulePushAnnouncement(
+        editingId ? "Class schedule updated" : "New class added",
+        editingId
+          ? `${formatClassType(classType.trim())} updated for ${dayLabel} ${startTime}-${endTime}.`
+          : `${formatClassType(classType.trim())} added on ${dayLabel} ${startTime}-${endTime}.`
+      );
+
       resetForm();
       await load();
       setMessage(editingId ? "Class updated." : "Class added.");
@@ -205,6 +213,10 @@ export default function ClassesScreen() {
     try {
       const { error } = await supabase.from("class_schedules").delete().eq("id", schedule.id);
       if (error) throw error;
+      await sendSchedulePushAnnouncement(
+        "Class removed",
+        `${formatClassType(schedule.class_type)} was removed from the schedule.`
+      );
       await load();
     } catch (error: any) {
       setMessage(error?.message ?? "Failed to delete class.");
@@ -218,6 +230,12 @@ export default function ClassesScreen() {
         .update({ is_active: !schedule.is_active })
         .eq("id", schedule.id);
       if (error) throw error;
+      await sendSchedulePushAnnouncement(
+        schedule.is_active ? "Class cancelled" : "Class reactivated",
+        `${formatClassType(schedule.class_type)} is now ${
+          schedule.is_active ? "inactive" : "active"
+        } on the schedule.`
+      );
       await load();
     } catch (error: any) {
       setMessage(error?.message ?? "Failed to update class status.");
@@ -233,6 +251,10 @@ export default function ClassesScreen() {
           .delete()
           .eq("id", existing.id);
         if (error) throw error;
+        await sendSchedulePushAnnouncement(
+          "Class reactivated",
+          `${formatClassType(schedule.class_type)} on ${existing.occurrence_date} is active again.`
+        );
       } else {
         const occurrenceDate = getNextOccurrenceDate(schedule);
         const { error } = await supabase.from("class_schedule_exceptions").insert({
@@ -240,12 +262,35 @@ export default function ClassesScreen() {
           occurrence_date: occurrenceDate
         });
         if (error) throw error;
+        await sendSchedulePushAnnouncement(
+          "Class cancellation",
+          `${formatClassType(schedule.class_type)} on ${occurrenceDate} has been cancelled.`
+        );
       }
       await load();
     } catch (error: any) {
       setMessage(error?.message ?? "Failed to update next occurrence status.");
     }
   };
+
+  const sendSchedulePushAnnouncement = useCallback(
+    async (title: string, body: string) => {
+      try {
+        const { error } = await supabase.functions.invoke("sendNotification", {
+          body: {
+            id: createMessageId(),
+            title,
+            body: truncateNotificationBody(body),
+            target: {}
+          }
+        });
+        if (error) throw error;
+      } catch {
+        // Keep schedule actions successful even if push dispatch fails.
+      }
+    },
+    [supabase]
+  );
 
   return (
     <Screen>
@@ -495,6 +540,19 @@ function safeTimeZone(timezone: string) {
   } catch {
     return "America/Toronto";
   }
+}
+
+function createMessageId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `msg-${Date.now()}`;
+}
+
+function truncateNotificationBody(value: string, maxLength = 140) {
+  const normalized = value.trim().replace(/\s+/g, " ");
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
 }
 
 const inputStyle = {

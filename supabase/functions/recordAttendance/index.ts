@@ -48,6 +48,14 @@ interface AdminCheckInReminder {
   schedule: ScheduleRow;
 }
 
+interface BadgeNewsRow {
+  id: string;
+  student_id: string;
+  title: string;
+  description: string;
+  created_at: string;
+}
+
 const DEFAULT_TIMEZONE = "America/Toronto";
 const MOBILE_LATE_CHECKIN_LIMIT_MINUTES = -30;
 const MOBILE_EARLY_CHECKIN_LIMIT_MINUTES = 4 * 60;
@@ -62,6 +70,7 @@ const corsHeaders = {
 
 Deno.serve(async (req) => {
   try {
+    const requestStartedAt = new Date();
     if (req.method === "OPTIONS") {
       return new Response("ok", { headers: corsHeaders });
     }
@@ -180,6 +189,7 @@ Deno.serve(async (req) => {
 
     const results = [];
     const adminReminders: AdminCheckInReminder[] = [];
+    const successfulStudentIds = new Set<string>();
     for (const student of students as StudentRow[]) {
       const blocked = student.membership_standing !== "active";
       if (payload.source === "mobile" && blocked) {
@@ -219,6 +229,7 @@ Deno.serve(async (req) => {
         blocked,
         attendance: normalizeAttendance(attendance)
       });
+      successfulStudentIds.add(student.id);
 
       if (payload.source === "frontdesk") {
         adminReminders.push({ student, schedule });
@@ -233,6 +244,18 @@ Deno.serve(async (req) => {
           reminderError instanceof Error ? reminderError.message : "Unknown reminder error";
         console.error(`Failed to send admin check-in reminders: ${message}`);
       }
+    }
+
+    try {
+      await sendAutomaticBadgePushes(
+        supabase,
+        [...successfulStudentIds],
+        requestStartedAt.toISOString()
+      );
+    } catch (badgePushError) {
+      const message =
+        badgePushError instanceof Error ? badgePushError.message : "Unknown badge push error";
+      console.error(`Failed to send automatic badge pushes: ${message}`);
     }
 
     return Response.json(
@@ -562,7 +585,7 @@ async function sendAdminCheckInReminders(
     return;
   }
 
-  const allowedVariants = new Set(["standalone", "bare", null, ""]);
+  const allowedVariants = new Set(["standalone", "bare", null, "", "unknown"]);
   const tokens = ((tokenRows ?? []) as PushTokenRow[]).filter((row) =>
     allowedVariants.has(row.app_variant)
   );
@@ -605,10 +628,114 @@ async function sendAdminCheckInReminders(
   }
 }
 
+async function sendAutomaticBadgePushes(
+  client: any,
+  studentIds: string[],
+  createdAfterIso: string
+) {
+  if (!studentIds.length) return;
+
+  const { data: badgeRows, error: badgeError } = await client
+    .from("mamute_news")
+    .select("id, student_id, title, description, created_at")
+    .eq("post_type", "badge")
+    .eq("visibility", "private")
+    .in("student_id", studentIds)
+    .gte("created_at", createdAfterIso)
+    .order("created_at", { ascending: true });
+
+  if (badgeError) {
+    console.error(`Failed to load automatic badge news rows: ${badgeError.message}`);
+    return;
+  }
+
+  const badgePosts = (badgeRows ?? []) as BadgeNewsRow[];
+  if (!badgePosts.length) return;
+
+  const { data: links, error: linkError } = await client
+    .from("student_access")
+    .select("user_id, student_id")
+    .in("student_id", [...new Set(badgePosts.map((row) => row.student_id))]);
+  if (linkError) {
+    console.error(`Failed to load student links for badge pushes: ${linkError.message}`);
+    return;
+  }
+
+  const accessRows = (links ?? []) as StudentAccessRow[];
+  if (!accessRows.length) return;
+
+  const profileIds = [...new Set(accessRows.map((row) => row.user_id))];
+  const { data: tokenRows, error: tokenError } = await client
+    .from("push_tokens")
+    .select("profile_id, expo_token, app_variant")
+    .in("profile_id", profileIds);
+
+  if (tokenError) {
+    console.error(`Failed to load push tokens for badge pushes: ${tokenError.message}`);
+    return;
+  }
+
+  const allowedVariants = new Set(["standalone", "bare", null, "", "unknown"]);
+  const tokenRowsFiltered = ((tokenRows ?? []) as PushTokenRow[]).filter((row) =>
+    allowedVariants.has(row.app_variant)
+  );
+  if (!tokenRowsFiltered.length) return;
+
+  const tokensByProfile = new Map<string, string[]>();
+  for (const row of tokenRowsFiltered) {
+    const list = tokensByProfile.get(row.profile_id) ?? [];
+    list.push(row.expo_token);
+    tokensByProfile.set(row.profile_id, list);
+  }
+
+  const usersByStudent = new Map<string, string[]>();
+  for (const row of accessRows) {
+    const list = usersByStudent.get(row.student_id) ?? [];
+    list.push(row.user_id);
+    usersByStudent.set(row.student_id, list);
+  }
+
+  const pushMessages = badgePosts.flatMap((post) => {
+    const userIds = usersByStudent.get(post.student_id) ?? [];
+    return userIds.flatMap((userId) => {
+      const tokens = tokensByProfile.get(userId) ?? [];
+      if (!tokens.length) return [];
+      return tokens.map((token) => ({
+        to: token,
+        title: post.title,
+        body: truncateNotificationBody(post.description)
+      }));
+    });
+  });
+  if (!pushMessages.length) return;
+
+  const response = await fetch("https://exp.host/--/api/v2/push/send", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    body: JSON.stringify(pushMessages)
+  });
+
+  if (!response.ok) {
+    const responseText = await response.text();
+    console.error(
+      `Failed to send automatic badge push notifications: ${response.status} ${response.statusText} ${responseText}`
+    );
+  }
+}
+
 function buildCheckInReminderBody(schedule: ScheduleRow) {
   const classLabel = formatClassType(schedule.class_type);
   const timeLabel = `${schedule.start_time.slice(0, 5)}-${schedule.end_time.slice(0, 5)}`;
   return `You were checked in for ${classLabel} (${timeLabel}). Please check in with the Mamute app when you arrive to class next time.`;
+}
+
+function truncateNotificationBody(value: string, maxLength = 140) {
+  const normalized = value.trim().replace(/\s+/g, " ");
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
 }
 
 function formatClassType(value: string) {

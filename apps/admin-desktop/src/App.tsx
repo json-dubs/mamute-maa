@@ -602,6 +602,7 @@ export function App() {
       draftSchedules.filter((item) => !isDraftId(item.id)).map((item) => item.id)
     );
     const draftIdMap = new Map<string, string>();
+    const scheduleChangeAnnouncements: Array<{ title: string; body: string }> = [];
 
     try {
       for (const schedule of draftSchedules) {
@@ -624,6 +625,13 @@ export function App() {
           if (error) throw error;
           if (data?.id) {
             draftIdMap.set(schedule.id, data.id);
+            const dayLabel =
+              dayOptions.find((option) => option.value === schedule.day_of_week)?.label ??
+              "Scheduled day";
+            scheduleChangeAnnouncements.push({
+              title: "New class added",
+              body: `${formatDisplayLabel(schedule.class_type)} added on ${dayLabel} ${schedule.start_time.slice(0, 5)}-${schedule.end_time.slice(0, 5)}.`
+            });
           }
           continue;
         }
@@ -645,6 +653,35 @@ export function App() {
             .update(payload)
             .eq("id", schedule.id);
           if (error) throw error;
+
+          const onlyStatusChanged =
+            current.class_type === schedule.class_type &&
+            current.instructor_id === schedule.instructor_id &&
+            current.day_of_week === schedule.day_of_week &&
+            current.start_time === schedule.start_time &&
+            current.end_time === schedule.end_time &&
+            current.timezone === schedule.timezone &&
+            current.is_active !== schedule.is_active;
+
+          if (onlyStatusChanged) {
+            scheduleChangeAnnouncements.push({
+              title: schedule.is_active ? "Class reactivated" : "Class cancelled",
+              body: `${formatDisplayLabel(schedule.class_type)} is now ${
+                schedule.is_active ? "active" : "cancelled"
+              } on the class schedule.`
+            });
+          } else {
+            const previousDay =
+              dayOptions.find((option) => option.value === current.day_of_week)?.label ??
+              "Unknown day";
+            const nextDay =
+              dayOptions.find((option) => option.value === schedule.day_of_week)?.label ??
+              "Updated day";
+            scheduleChangeAnnouncements.push({
+              title: "Class schedule updated",
+              body: `${formatDisplayLabel(schedule.class_type)} moved from ${previousDay} ${current.start_time.slice(0, 5)}-${current.end_time.slice(0, 5)} to ${nextDay} ${schedule.start_time.slice(0, 5)}-${schedule.end_time.slice(0, 5)}.`
+            });
+          }
         }
       }
 
@@ -655,6 +692,10 @@ export function App() {
             .delete()
             .eq("id", schedule.id);
           if (error) throw error;
+          scheduleChangeAnnouncements.push({
+            title: "Class removed",
+            body: `${formatDisplayLabel(schedule.class_type)} was removed from the schedule.`
+          });
         }
       }
 
@@ -662,6 +703,9 @@ export function App() {
         ...item,
         schedule_id: draftIdMap.get(item.schedule_id) ?? item.schedule_id
       }));
+      const normalizedScheduleById = new Map(
+        draftSchedules.map((item) => [draftIdMap.get(item.id) ?? item.id, item])
+      );
 
       const currentExceptionKeys = new Map(
         scheduleExceptions.map((item) => [`${item.schedule_id}:${item.occurrence_date}`, item])
@@ -678,6 +722,13 @@ export function App() {
           occurrence_date: item.occurrence_date
         });
         if (error) throw error;
+        const schedule = normalizedScheduleById.get(item.schedule_id);
+        if (schedule) {
+          scheduleChangeAnnouncements.push({
+            title: "Class cancellation",
+            body: `${formatDisplayLabel(schedule.class_type)} on ${item.occurrence_date} (${schedule.start_time.slice(0, 5)}-${schedule.end_time.slice(0, 5)}) has been cancelled.`
+          });
+        }
       }
 
       for (const item of scheduleExceptions) {
@@ -688,6 +739,43 @@ export function App() {
             .delete()
             .eq("id", item.id);
           if (error) throw error;
+          const schedule =
+            normalizedScheduleById.get(item.schedule_id) ??
+            schedules.find((entry) => entry.id === item.schedule_id);
+          if (schedule) {
+            scheduleChangeAnnouncements.push({
+              title: "Class reactivated",
+              body: `${formatDisplayLabel(schedule.class_type)} on ${item.occurrence_date} is active again.`
+            });
+          }
+        }
+      }
+
+      const uniqueAnnouncements = [
+        ...new Map(
+          scheduleChangeAnnouncements.map((item) => [
+            `${item.title}::${item.body}`,
+            {
+              title: item.title,
+              body: truncateNotificationBody(item.body)
+            }
+          ])
+        ).values()
+      ].slice(0, 8);
+      if (uniqueAnnouncements.length) {
+        for (const announcement of uniqueAnnouncements) {
+          const { error: pushError } = await supabase.functions.invoke("sendNotification", {
+            headers: {
+              Authorization: `Bearer ${session.access_token}`
+            },
+            body: {
+              id: crypto.randomUUID(),
+              title: announcement.title,
+              body: announcement.body,
+              target: {}
+            }
+          });
+          if (pushError) throw pushError;
         }
       }
 
@@ -698,7 +786,7 @@ export function App() {
       setSelectedSchedulePayload(null);
       setIsScheduleEditing(false);
     } catch (error: any) {
-      setSchedulesMessage(error?.message ?? "Failed to save schedule changes");
+      setSchedulesMessage(error?.message ?? "Failed to save schedule changes or send push notification");
     } finally {
       setIsScheduleSaving(false);
     }
@@ -2398,6 +2486,7 @@ export function App() {
 
     setIsBadgeAssigning(true);
     setBadgesMessage(null);
+    let pushIssue: string | null = null;
     try {
       const { data: existingRows, error: existingError } = await supabase
         .from("student_badges")
@@ -2452,6 +2541,24 @@ export function App() {
           created_by: session.user.id
         });
         if (newsError) throw newsError;
+        try {
+          const { error: pushError } = await supabase.functions.invoke("sendNotification", {
+            headers: {
+              Authorization: `Bearer ${session.access_token}`
+            },
+            body: {
+              id: crypto.randomUUID(),
+              title: `Badge Award: ${badge.title}`,
+              body: truncateNotificationBody(
+                `Congratulations to ${studentNames} for earning the ${badge.title} badge.`
+              ),
+              target: {}
+            }
+          });
+          if (pushError) throw pushError;
+        } catch (pushError) {
+          pushIssue = await getFunctionInvokeErrorMessage(pushError);
+        }
       } else {
         const privatePosts = selectedStudents.map((student) => {
           const studentName =
@@ -2475,10 +2582,58 @@ export function App() {
             .insert(privatePosts);
           if (privatePostError) throw privatePostError;
         }
+
+        try {
+          const { data: accessRows, error: accessError } = await supabase
+            .from("student_access")
+            .select("user_id, student_id")
+            .in("student_id", targetStudentIds);
+          if (accessError) throw accessError;
+
+          const studentById = new Map(selectedStudents.map((student) => [student.id, student]));
+          const uniqueUserIds = [
+            ...new Set(
+              ((accessRows ?? []) as { user_id: string; student_id: string }[]).map(
+                (row) => row.user_id
+              )
+            )
+          ];
+          for (const userId of uniqueUserIds) {
+            const studentIdsForUser = ((accessRows ?? []) as { user_id: string; student_id: string }[])
+              .filter((row) => row.user_id === userId)
+              .map((row) => row.student_id);
+            const studentNames = studentIdsForUser
+              .map((studentId) => {
+                const student = studentById.get(studentId);
+                return student
+                  ? [student.first_name, student.last_name].filter(Boolean).join(" ") || "Student"
+                  : null;
+              })
+              .filter(Boolean) as string[];
+            const namesLabel = studentNames.length ? studentNames.join(", ") : "your student";
+            const { error: pushError } = await supabase.functions.invoke("sendNotification", {
+              headers: {
+                Authorization: `Bearer ${session.access_token}`
+              },
+              body: {
+                id: crypto.randomUUID(),
+                title: `Badge Award: ${badge.title}`,
+                body: truncateNotificationBody(
+                  `${namesLabel} earned the ${badge.title} badge.`
+                ),
+                target: { profileId: userId }
+              }
+            });
+            if (pushError) throw pushError;
+          }
+        } catch (pushError) {
+          pushIssue = await getFunctionInvokeErrorMessage(pushError);
+        }
       }
 
+      const assignmentMessage = `Assigned ${badge.title} to ${targetStudentIds.length} student${targetStudentIds.length === 1 ? "" : "s"}.`;
       setBadgesMessage(
-        `Assigned ${badge.title} to ${targetStudentIds.length} student${targetStudentIds.length === 1 ? "" : "s"}.`
+        pushIssue ? `${assignmentMessage} Push notification failed: ${pushIssue}` : assignmentMessage
       );
       setSelectedBadgeStudentIds([]);
       await loadNews();
