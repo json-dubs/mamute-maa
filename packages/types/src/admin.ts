@@ -277,6 +277,8 @@ export interface CreateMamuteNewsPostRequest {
 export type ShopMerchandiseType =
   | "uniform"
   | "shirt"
+  | "sweater"
+  | "jacket"
   | "pants"
   | "shorts"
   | "accessory"
@@ -284,7 +286,14 @@ export type ShopMerchandiseType =
 
 export type ShopMerchandiseSex = "male" | "female" | "unisex";
 
-export type ShopMerchandiseSize = "XS" | "S" | "M" | "L" | "XL" | "XXL";
+export type ShopMerchandiseSize =
+  | "XS"
+  | "S"
+  | "M"
+  | "L"
+  | "XL"
+  | "XXL"
+  | "one-size-fits-all";
 
 export interface ShopMerchandiseRecord {
   id: string;

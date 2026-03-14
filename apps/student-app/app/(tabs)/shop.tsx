@@ -100,6 +100,8 @@ const typeFilterOptions: Array<{ value: "all" | ShopMerchandiseType; label: stri
   { value: "all", label: "All" },
   { value: "uniform", label: "Uniform" },
   { value: "shirt", label: "Shirt" },
+  { value: "sweater", label: "Sweater" },
+  { value: "jacket", label: "Jacket" },
   { value: "pants", label: "Pants" },
   { value: "shorts", label: "Shorts" },
   { value: "accessory", label: "Accessory" },

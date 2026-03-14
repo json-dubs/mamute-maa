@@ -340,7 +340,7 @@ export default function AccountScreen() {
 
           <SectionHeader
             title="Badges Earned"
-            subtitle="Rewards unlocked through attendance and achievements"
+            subtitle="Badges unlocked through attendance and achievements"
           />
           {linkedStudents.map((student) => {
             const studentName = [student.firstName, student.lastName].filter(Boolean).join(" ");

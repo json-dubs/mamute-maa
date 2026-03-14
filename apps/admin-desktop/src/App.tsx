@@ -199,6 +199,8 @@ type BadgeRecord = {
 type ShopMerchandiseType =
   | "uniform"
   | "shirt"
+  | "sweater"
+  | "jacket"
   | "pants"
   | "shorts"
   | "accessory"
@@ -206,7 +208,14 @@ type ShopMerchandiseType =
 
 type ShopMerchandiseSex = "male" | "female" | "unisex";
 
-type ShopMerchandiseSize = "XS" | "S" | "M" | "L" | "XL" | "XXL";
+type ShopMerchandiseSize =
+  | "XS"
+  | "S"
+  | "M"
+  | "L"
+  | "XL"
+  | "XXL"
+  | "one-size-fits-all";
 
 type ShopMerchandiseRecord = {
   id: string;
@@ -252,6 +261,8 @@ const dayOptions = [
 const shopItemTypeOptions: { value: ShopMerchandiseType; label: string }[] = [
   { value: "uniform", label: "Uniform" },
   { value: "shirt", label: "Shirt" },
+  { value: "sweater", label: "Sweater" },
+  { value: "jacket", label: "Jacket" },
   { value: "pants", label: "Pants" },
   { value: "shorts", label: "Shorts" },
   { value: "accessory", label: "Accessory" },
@@ -264,7 +275,15 @@ const shopSexOptions: { value: ShopMerchandiseSex; label: string }[] = [
   { value: "unisex", label: "Unisex" }
 ];
 
-const shopSizeOptions: ShopMerchandiseSize[] = ["XS", "S", "M", "L", "XL", "XXL"];
+const shopSizeOptions: ShopMerchandiseSize[] = [
+  "XS",
+  "S",
+  "M",
+  "L",
+  "XL",
+  "XXL",
+  "one-size-fits-all"
+];
 
 const newsBucket = "mamute-news";
 const badgesBucket = "mamute-badges";

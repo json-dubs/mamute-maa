@@ -188,16 +188,31 @@ export default function ScheduleScreen() {
               </Pressable>
             </Row>
             {selectedInstructorBio?.imageUrl ? (
-              <Image
-                source={{ uri: selectedInstructorBio.imageUrl }}
+              <View
                 style={{
                   width: "100%",
-                  height: 220,
+                  height: 240,
                   borderRadius: 14,
-                  backgroundColor: uiColors.surfaceAlt
+                  borderWidth: 1,
+                  borderColor: uiColors.border,
+                  backgroundColor: "#0b0b0b",
+                  overflow: "hidden",
+                  justifyContent: "center",
+                  alignItems: "center",
+                  padding: 8
                 }}
-                resizeMode="cover"
-              />
+              >
+                <Image
+                  source={{ uri: selectedInstructorBio.imageUrl }}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    borderRadius: 10,
+                    backgroundColor: "transparent"
+                  }}
+                  resizeMode="contain"
+                />
+              </View>
             ) : null}
             <Text style={{ color: uiColors.text, lineHeight: 22 }}>
               {selectedInstructorBio?.about?.trim()

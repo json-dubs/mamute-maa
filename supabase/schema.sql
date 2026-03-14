@@ -269,7 +269,16 @@ create table if not exists shop_merchandise (
   name text not null,
   description text not null,
   item_type text not null check (
-    item_type in ('uniform', 'shirt', 'pants', 'shorts', 'accessory', 'training')
+    item_type in (
+      'uniform',
+      'shirt',
+      'sweater',
+      'jacket',
+      'pants',
+      'shorts',
+      'accessory',
+      'training'
+    )
   ),
   sex text not null check (sex in ('male', 'female', 'unisex')),
   sizes text[] not null default '{}',
@@ -281,6 +290,43 @@ create table if not exists shop_merchandise (
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
+
+do $$
+declare
+  constraint_name text;
+begin
+  for constraint_name in
+    select tc.constraint_name
+    from information_schema.table_constraints tc
+    join information_schema.check_constraints cc
+      on cc.constraint_name = tc.constraint_name
+     and cc.constraint_schema = tc.constraint_schema
+    where tc.table_schema = 'public'
+      and tc.table_name = 'shop_merchandise'
+      and tc.constraint_type = 'CHECK'
+      and cc.check_clause ilike '%item_type%'
+  loop
+    execute format(
+      'alter table public.shop_merchandise drop constraint if exists %I',
+      constraint_name
+    );
+  end loop;
+
+  alter table public.shop_merchandise
+    add constraint shop_merchandise_item_type_check
+    check (
+      item_type in (
+        'uniform',
+        'shirt',
+        'sweater',
+        'jacket',
+        'pants',
+        'shorts',
+        'accessory',
+        'training'
+      )
+    );
+end $$;
 
 create index if not exists idx_shop_merchandise_filters
   on shop_merchandise (is_active, item_type, sex, created_at desc);
