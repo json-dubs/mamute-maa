@@ -27,7 +27,7 @@ export default function NewsScreen() {
   const [posts, setPosts] = useState<NewsPostRow[]>([]);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [expiresAtInput, setExpiresAtInput] = useState("");
+  const [expiresAt, setExpiresAt] = useState<Date | null>(null);
   const [selectedImage, setSelectedImage] = useState<{
     uri: string;
     name: string;
@@ -77,11 +77,7 @@ export default function NewsScreen() {
       return;
     }
 
-    const expiryIso = parseExpiryInput(expiresAtInput);
-    if (expiresAtInput.trim() && !expiryIso) {
-      setMessage("Use expiry format YYYY-MM-DD HH:MM.");
-      return;
-    }
+    const expiryIso = expiresAt ? expiresAt.toISOString() : null;
 
     setSaving(true);
     setMessage(null);
@@ -141,7 +137,7 @@ export default function NewsScreen() {
 
       setTitle("");
       setDescription("");
-      setExpiresAtInput("");
+      setExpiresAt(null);
       setSelectedImage(null);
       await load();
       setMessage(statusMessage);
@@ -236,13 +232,68 @@ export default function NewsScreen() {
             placeholder="Post description"
             placeholderTextColor={uiColors.muted}
           />
-          <TextInput
-            style={styles.input}
-            value={expiresAtInput}
-            onChangeText={setExpiresAtInput}
-            placeholder="Expiry (optional): YYYY-MM-DD HH:MM"
-            placeholderTextColor={uiColors.muted}
-          />
+          <View style={styles.expirySection}>
+            <Text style={styles.expiryLabel}>Expiry (optional)</Text>
+            <View style={styles.expiryRow}>
+              <Pressable
+                style={[styles.secondaryButton, !expiresAt ? styles.expirySelected : null]}
+                onPress={() => setExpiresAt(null)}
+              >
+                <Text style={styles.secondaryButtonText}>No expiry</Text>
+              </Pressable>
+              <Pressable
+                style={styles.secondaryButton}
+                onPress={() => setExpiresAt(buildExpiryFromNow(24))}
+              >
+                <Text style={styles.secondaryButtonText}>+24h</Text>
+              </Pressable>
+              <Pressable
+                style={styles.secondaryButton}
+                onPress={() => setExpiresAt(buildExpiryFromNow(48))}
+              >
+                <Text style={styles.secondaryButtonText}>+48h</Text>
+              </Pressable>
+              <Pressable
+                style={styles.secondaryButton}
+                onPress={() => setExpiresAt(buildExpiryFromNow(24 * 7))}
+              >
+                <Text style={styles.secondaryButtonText}>+7d</Text>
+              </Pressable>
+            </View>
+            {expiresAt ? (
+              <>
+                <Text style={styles.metaText}>Selected: {expiresAt.toLocaleString()}</Text>
+                <View style={styles.expiryRow}>
+                  <Pressable
+                    style={styles.secondaryButton}
+                    onPress={() => setExpiresAt(shiftDate(expiresAt, -1))}
+                  >
+                    <Text style={styles.secondaryButtonText}>-1h</Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.secondaryButton}
+                    onPress={() => setExpiresAt(shiftDate(expiresAt, 1))}
+                  >
+                    <Text style={styles.secondaryButtonText}>+1h</Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.secondaryButton}
+                    onPress={() => setExpiresAt(shiftDate(expiresAt, -24))}
+                  >
+                    <Text style={styles.secondaryButtonText}>-1d</Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.secondaryButton}
+                    onPress={() => setExpiresAt(shiftDate(expiresAt, 24))}
+                  >
+                    <Text style={styles.secondaryButtonText}>+1d</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : (
+              <Text style={styles.metaText}>No expiry selected.</Text>
+            )}
+          </View>
           <View style={styles.attachmentRow}>
             <Pressable style={styles.secondaryButton} onPress={() => void selectImage()}>
               <Text style={styles.secondaryButtonText}>
@@ -302,13 +353,17 @@ export default function NewsScreen() {
   );
 }
 
-function parseExpiryInput(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const normalized = trimmed.replace(" ", "T");
-  const parsed = new Date(normalized);
-  if (Number.isNaN(parsed.getTime())) return null;
-  return parsed.toISOString();
+function buildExpiryFromNow(hours: number) {
+  const next = new Date();
+  next.setSeconds(0, 0);
+  next.setHours(next.getHours() + hours);
+  return next;
+}
+
+function shiftDate(value: Date, hours: number) {
+  const next = new Date(value.getTime());
+  next.setHours(next.getHours() + hours);
+  return next;
 }
 
 function truncateNotificationBody(value: string, maxLength = 140) {
@@ -405,6 +460,23 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8
   },
+  expirySection: {
+    backgroundColor: uiColors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: uiColors.border,
+    borderRadius: 10,
+    padding: 12,
+    gap: 8
+  },
+  expiryLabel: {
+    color: uiColors.text,
+    fontWeight: "700"
+  },
+  expiryRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8
+  },
   secondaryButton: {
     backgroundColor: uiColors.surfaceAlt,
     borderColor: uiColors.border,
@@ -416,6 +488,9 @@ const styles = StyleSheet.create({
   secondaryButtonText: {
     color: uiColors.text,
     fontWeight: "700"
+  },
+  expirySelected: {
+    borderColor: uiColors.accent
   },
   secondaryDanger: {
     borderColor: "#7f1d1d",
