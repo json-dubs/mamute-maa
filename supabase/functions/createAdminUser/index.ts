@@ -49,6 +49,43 @@ function buildInviteOptions(firstName: string, lastName: string, redirectTo?: st
   };
 }
 
+function isLocalhostUrl(value: string) {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1";
+  } catch {
+    return false;
+  }
+}
+
+function isHttpUrl(value: string) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function resolveRedirectTo(payloadRedirectTo?: string, requestOrigin?: string) {
+  const payloadValue = payloadRedirectTo?.trim();
+  const originValue = requestOrigin?.trim();
+
+  if (payloadValue) {
+    if (isLocalhostUrl(payloadValue) && !(originValue && isLocalhostUrl(originValue))) {
+      return undefined;
+    }
+    return payloadValue;
+  }
+
+  if (originValue && isHttpUrl(originValue) && !isLocalhostUrl(originValue)) {
+    return originValue;
+  }
+
+  return undefined;
+}
+
 async function upsertAdminProfile(
   supabase: ReturnType<typeof createClient>,
   params: { userId: string; firstName: string; lastName: string; email: string }
@@ -154,10 +191,7 @@ Deno.serve(async (req) => {
     const email = payload?.email?.trim().toLowerCase();
     const firstName = payload?.firstName?.trim();
     const lastName = payload?.lastName?.trim();
-    const redirectTo =
-      payload?.redirectTo?.trim() ||
-      Deno.env.get("ADMIN_INVITE_REDIRECT_URL")?.trim() ||
-      undefined;
+    const redirectTo = resolveRedirectTo(payload?.redirectTo, req.headers.get("origin") ?? undefined);
 
     if (!email || !firstName || !lastName) {
       return jsonResponse({ error: "MISSING_FIELDS" }, 400);
@@ -251,7 +285,7 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: upsertError.message }, 400);
     }
 
-    return jsonResponse({ id: createdUserId, email, delivery, inviteLink });
+    return jsonResponse({ id: createdUserId, email, delivery, inviteLink, redirectTo });
   } catch (error) {
     const message = error instanceof Error ? error.message : "UNEXPECTED_ERROR";
     return jsonResponse({ error: message }, 500);

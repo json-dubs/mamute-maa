@@ -1004,9 +1004,20 @@ export function App() {
     setAdminCreateMessage(null);
     setIsAdminCreating(true);
     try {
+      const configuredRedirect = (
+        import.meta.env.VITE_ADMIN_INVITE_REDIRECT_URL as string | undefined
+      )?.trim();
+      const runtimeOrigin = window.location.origin;
+      const runtimeRedirectCandidate =
+        runtimeOrigin.startsWith("http://") || runtimeOrigin.startsWith("https://")
+          ? runtimeOrigin
+          : undefined;
       const redirectTo =
-        (import.meta.env.VITE_ADMIN_INVITE_REDIRECT_URL as string | undefined)?.trim() ||
-        undefined;
+        configuredRedirect && !isLocalhostUrl(configuredRedirect)
+          ? configuredRedirect
+          : runtimeRedirectCandidate && !isLocalhostUrl(runtimeRedirectCandidate)
+            ? runtimeRedirectCandidate
+            : undefined;
       const { data, error } = await supabase.functions.invoke("createAdminUser", {
         headers: { Authorization: `Bearer ${session.access_token}` },
         body: {
@@ -1023,13 +1034,19 @@ export function App() {
       const result = (data ?? {}) as {
         delivery?: "email" | "manual_link";
         inviteLink?: string | null;
+        redirectTo?: string | null;
       };
       if (result.delivery === "manual_link" && result.inviteLink) {
         setAdminCreateMessage(
           `Email send limit reached. Share this invite link manually: ${result.inviteLink}`
         );
       } else {
-        setAdminCreateMessage("Invite sent. They will set their password by email.");
+        const redirectInfo = result.redirectTo
+          ? ` Redirect: ${result.redirectTo}`
+          : " Redirect not set in invite. Configure VITE_ADMIN_INVITE_REDIRECT_URL for non-local invite completion.";
+        setAdminCreateMessage(
+          `Invite sent. They will set their password by email.${redirectInfo}`
+        );
       }
     } catch (error: any) {
       const status = error?.context?.status ? `status ${error.context.status}` : null;
@@ -6290,6 +6307,16 @@ function safeTimeZone(timezone: string) {
     return timezone;
   } catch {
     return "America/Toronto";
+  }
+}
+
+function isLocalhostUrl(value: string) {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1";
+  } catch {
+    return false;
   }
 }
 
