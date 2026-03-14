@@ -116,11 +116,18 @@ async function resolveTargetProfileIds(client: any, target: PushJob["target"]) {
     const { data, error } = await client
       .from("student_access")
       .select("user_id")
-      .eq("student_id", target.studentId);
+      .eq("student_id", target.studentId)
+      .not("user_id", "is", null);
     if (error) {
       throw new Error(`Failed to resolve student links: ${error.message}`);
     }
-    const ids = [...new Set(((data ?? []) as { user_id: string }[]).map((row) => row.user_id))];
+    const ids = [
+      ...new Set(
+        ((data ?? []) as { user_id?: string | null }[])
+          .map((row) => row.user_id?.trim())
+          .filter((value): value is string => Boolean(value))
+      )
+    ];
     return ids;
   }
   return [];
@@ -181,16 +188,66 @@ async function fanOutExpo(tokens: any[], payload: PushJob) {
       ? ((responseBody as { data: unknown[] }).data ?? [])
       : [];
 
-  const ticketErrors = tickets.filter(isErroredTicket);
+  const ticketErrors = tickets
+    .map((ticket, index) => ({ ticket, index }))
+    .filter(({ ticket }) => isErroredTicket(ticket));
+
   if (ticketErrors.length) {
-    throw new Error(
-      `Expo rejected ${ticketErrors.length} push notification(s): ${JSON.stringify(ticketErrors)}`
+    console.warn(
+      JSON.stringify({
+        event: "expo_push_ticket_errors",
+        rejectedCount: ticketErrors.length,
+        totalCount: tickets.length,
+        errors: ticketErrors.map(({ ticket, index }) => ({
+          index,
+          ticket
+        }))
+      })
     );
+
+    const rejectedTokens = ticketErrors
+      .filter(({ ticket }) => shouldPruneToken(ticket))
+      .map(({ index }) => tokens[index]?.expo_token)
+      .filter((token): token is string => Boolean(token));
+
+    if (rejectedTokens.length) {
+      const serviceClient = createServiceClient();
+      const { error: pruneError } = await serviceClient
+        .from("push_tokens")
+        .delete()
+        .in("expo_token", rejectedTokens);
+
+      if (pruneError) {
+        console.error(
+          JSON.stringify({
+            event: "push_token_prune_failed",
+            count: rejectedTokens.length,
+            message: pruneError.message
+          })
+        );
+      } else {
+        console.log(
+          JSON.stringify({
+            event: "push_token_pruned",
+            count: rejectedTokens.length
+          })
+        );
+      }
+    }
+
+    if (ticketErrors.length === tickets.length) {
+      throw new Error(
+        `Expo rejected ${ticketErrors.length} push notification(s): ${JSON.stringify(
+          ticketErrors.map(({ ticket }) => ticket)
+        )}`
+      );
+    }
   }
 
   return {
-    status: "ok",
-    tickets
+    status: ticketErrors.length ? "partial_success" : "ok",
+    tickets,
+    rejectedCount: ticketErrors.length
   };
 }
 
@@ -251,6 +308,16 @@ function isErroredTicket(ticket: unknown) {
       "status" in ticket &&
       (ticket as { status?: string }).status === "error"
   );
+}
+
+function shouldPruneToken(ticket: unknown) {
+  if (!ticket || typeof ticket !== "object") return false;
+  const details =
+    "details" in ticket && ticket.details && typeof ticket.details === "object"
+      ? (ticket.details as { error?: string })
+      : null;
+  const errorCode = details?.error ?? "";
+  return errorCode === "DeviceNotRegistered" || errorCode === "InvalidCredentials";
 }
 
 function truncateForLog(value: string, maxLength = 500) {

@@ -1,0 +1,63 @@
+import type { ExpoConfig } from "expo/config";
+
+const config: ExpoConfig = {
+  name: "Mamute",
+  slug: "student-app",
+  version: "1.0.0",
+  orientation: "portrait",
+  icon: "./assets/images/icon.png",
+  scheme: "studentapp",
+  userInterfaceStyle: "automatic",
+  newArchEnabled: true,
+  splash: {
+    image: "./assets/images/MamuteLogoHeader.png",
+    resizeMode: "contain",
+    backgroundColor: "#ffffff"
+  },
+  ios: {
+    supportsTablet: true,
+    infoPlist: {
+      NSLocationWhenInUseUsageDescription: "Location is used to confirm gym check-ins."
+    }
+  },
+  android: {
+    package: "com.jsondubs.mamutestudent",
+    // Prefer EAS file env var for cloud builds; fallback to local file for local/dev builds.
+    googleServicesFile: process.env.GOOGLE_SERVICES_JSON ?? "./google-services.json",
+    adaptiveIcon: {
+      foregroundImage: "./assets/images/icon.png",
+      backgroundColor: "#ffffff"
+    },
+    permissions: ["ACCESS_FINE_LOCATION"],
+    edgeToEdgeEnabled: true,
+    predictiveBackGestureEnabled: false
+  },
+  web: {
+    bundler: "metro",
+    output: "static",
+    favicon: "./assets/images/favicon.png"
+  },
+  plugins: [
+    [
+      "expo-notifications",
+      {
+        icon: "./assets/images/notification-icon.png",
+        color: "#e11d2e",
+        defaultChannel: "general"
+      }
+    ],
+    "expo-router"
+  ],
+  experiments: {
+    typedRoutes: true
+  },
+  extra: {
+    router: {},
+    eas: {
+      projectId: "31db843f-9e14-4588-82a0-d2f40f2e0f46"
+    }
+  },
+  owner: "jsondubs"
+};
+
+export default config;

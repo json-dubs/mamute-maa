@@ -18,6 +18,7 @@ apps/*/.env*
 apps/*/.supabase.env
 apps/*/google-services.json
 apps/*/GoogleService-Info.plist
+apps/*/*firebase-adminsdk*.json
 google-services.json
 GoogleService-Info.plist
 supabase/.branches
