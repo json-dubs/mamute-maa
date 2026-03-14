@@ -14,6 +14,8 @@ export default function CheckInScreen() {
   const [schedules, setSchedules] = useState<ClassScheduleTemplate[]>([]);
   const [selectedScheduleId, setSelectedScheduleId] = useState<string>("");
   const [studentNumberInput, setStudentNumberInput] = useState("");
+  const [checkInAtInput, setCheckInAtInput] = useState("");
+  const parsedCheckInAt = useMemo(() => parseCheckInAtInput(checkInAtInput), [checkInAtInput]);
   const [checkInResponse, setCheckInResponse] = useState<CheckInResponse | null>(null);
 
   const loadSchedules = useCallback(async () => {
@@ -40,6 +42,16 @@ export default function CheckInScreen() {
   });
 
   const eligibleSchedules = useMemo(() => {
+    if (parsedCheckInAt) {
+      return schedules
+        .filter((schedule) => schedule.isActive)
+        .filter((schedule) => {
+          const timezone = safeTimeZone(schedule.timezone || "America/Toronto");
+          return schedule.dayOfWeek === getDayOfWeek(parsedCheckInAt, timezone);
+        })
+        .sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+    }
+
     const now = new Date();
     return schedules
       .filter((schedule) => schedule.isActive)
@@ -50,7 +62,7 @@ export default function CheckInScreen() {
       .filter((entry) => entry.deltaMinutes >= -30 && entry.deltaMinutes <= 4 * 60)
       .sort((a, b) => a.deltaMinutes - b.deltaMinutes)
       .map((entry) => entry.schedule);
-  }, [schedules]);
+  }, [parsedCheckInAt, schedules]);
 
   useEffect(() => {
     if (!eligibleSchedules.length) {
@@ -64,6 +76,11 @@ export default function CheckInScreen() {
   }, [eligibleSchedules, selectedScheduleId]);
 
   const submitCheckIn = async () => {
+    if (checkInAtInput.trim() && !parsedCheckInAt) {
+      setMessage("Please select a valid check-in date/time.");
+      return;
+    }
+
     const studentNumbers = parseStudentNumbers(studentNumberInput);
     if (!studentNumbers.length) {
       setMessage("Enter at least one valid student number.");
@@ -80,6 +97,7 @@ export default function CheckInScreen() {
       const response = await recordAttendance({
         studentNumbers,
         scheduleId: selectedScheduleId,
+        checkInAt: parsedCheckInAt?.toISOString(),
         source: "frontdesk",
         deviceId: "instructor-mobile"
       });
@@ -106,8 +124,21 @@ export default function CheckInScreen() {
             </Pressable>
           </View>
           <Text style={styles.mutedText}>
-            Select a class in the next 4 hours and enter student number(s) to sign them in.
+            {checkInAtInput.trim()
+              ? "Retroactive mode: class options are based on your selected date/time."
+              : "Select a class in the next 4 hours and enter student number(s) to sign them in."}
           </Text>
+
+          <Text style={styles.fieldLabel}>Retroactive Check-In Time (optional)</Text>
+          <TextInput
+            style={styles.input}
+            value={checkInAtInput}
+            onChangeText={setCheckInAtInput}
+            placeholder="YYYY-MM-DDTHH:mm (or YYYY-MM-DD HH:mm)"
+            placeholderTextColor={uiColors.muted}
+            autoCapitalize="none"
+            editable={!submitting}
+          />
 
           <Text style={styles.fieldLabel}>Class</Text>
           <View style={styles.pillWrap}>
@@ -121,13 +152,17 @@ export default function CheckInScreen() {
                     onPress={() => setSelectedScheduleId(schedule.id)}
                   >
                     <Text style={selected ? styles.pillTextActive : styles.pillText}>
-                      {formatScheduleOption(schedule)}
+                      {formatScheduleOption(schedule, parsedCheckInAt ?? undefined)}
                     </Text>
                   </Pressable>
                 );
               })
             ) : (
-              <Text style={styles.mutedText}>No classes available in the current check-in window.</Text>
+              <Text style={styles.mutedText}>
+                {checkInAtInput.trim()
+                  ? "No classes found for selected date/time."
+                  : "No classes available in the current check-in window."}
+              </Text>
             )}
           </View>
 
@@ -188,7 +223,16 @@ function parseStudentNumbers(value: string) {
     .filter((num) => Number.isFinite(num));
 }
 
-function formatScheduleOption(schedule: ClassScheduleTemplate) {
+function formatScheduleOption(schedule: ClassScheduleTemplate, customCheckInAt?: Date) {
+  if (customCheckInAt) {
+    const timezone = safeTimeZone(schedule.timezone || "America/Toronto");
+    const day =
+      ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][
+        getDayOfWeek(customCheckInAt, timezone)
+      ] ?? "Day";
+    return `${day} ${schedule.startTime.slice(0, 5)} ${formatClassType(schedule.classType)}`;
+  }
+
   const day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][schedule.dayOfWeek] ?? "Day";
   return `${day} ${schedule.startTime.slice(0, 5)} ${formatClassType(schedule.classType)}`;
 }
@@ -252,6 +296,15 @@ function safeTimeZone(timezone: string) {
   } catch {
     return "America/Toronto";
   }
+}
+
+function parseCheckInAtInput(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.includes("T") ? trimmed : trimmed.replace(" ", "T");
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
 }
 
 const styles = StyleSheet.create({

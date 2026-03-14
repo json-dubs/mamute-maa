@@ -62,6 +62,9 @@ async function buildAttendanceError(error: unknown) {
         if (code === "MISSING_STUDENT_NUMBERS") {
           return new Error("No valid student numbers were provided for check-in.");
         }
+        if (code === "INVALID_CHECKIN_TIME") {
+          return new Error("The selected check-in date/time is invalid.");
+        }
         if (code === "STUDENTS_NOT_FOUND") {
           return new Error("One or more selected student numbers were not found.");
         }

@@ -75,6 +75,7 @@ export interface CheckInRequest {
   barcode?: string;
   studentNumbers?: number[];
   scheduleId?: string;
+  checkInAt?: string;
   deviceId?: string;
   source: "frontdesk" | "mobile";
   locationVerified?: boolean;

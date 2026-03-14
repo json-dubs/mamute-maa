@@ -349,6 +349,11 @@ export function App() {
   const [checkinResponse, setCheckinResponse] = useState<CheckInResponse | null>(null);
   const [isCheckingIn, setIsCheckingIn] = useState(false);
   const [checkinNow, setCheckinNow] = useState(() => Date.now());
+  const [checkinAtInput, setCheckinAtInput] = useState("");
+  const parsedFrontdeskCheckinAt = useMemo(
+    () => parseCheckInAtInput(checkinAtInput),
+    [checkinAtInput]
+  );
 
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [studentsMessage, setStudentsMessage] = useState<string | null>(null);
@@ -585,6 +590,22 @@ export function App() {
   }, [nextOccurrenceBySchedule, workingScheduleExceptions, workingSchedules]);
 
   const eligibleFrontdeskSchedules = useMemo(() => {
+    if (parsedFrontdeskCheckinAt) {
+      return schedules
+        .filter((schedule) => schedule.is_active)
+        .filter((schedule) => {
+          const timezone = safeTimeZone(schedule.timezone || "America/Toronto");
+          const dayOfWeek = getDayOfWeek(parsedFrontdeskCheckinAt, timezone);
+          if (schedule.day_of_week !== dayOfWeek) return false;
+          const occurrenceDate = getDateInTimeZone(parsedFrontdeskCheckinAt, timezone);
+          return !scheduleExceptions.some(
+            (item) =>
+              item.schedule_id === schedule.id && item.occurrence_date === occurrenceDate
+          );
+        })
+        .sort((a, b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time));
+    }
+
     const now = new Date(checkinNow);
     return schedules
       .filter(
@@ -598,7 +619,14 @@ export function App() {
       .filter((item) => item.delta >= -30 && item.delta <= 4 * 60)
       .sort((a, b) => a.delta - b.delta)
       .map((item) => item.schedule);
-  }, [actualCancelledNextOccurrenceIds, checkinNow, schedules]);
+  }, [
+    actualCancelledNextOccurrenceIds,
+    checkinAtInput,
+    checkinNow,
+    parsedFrontdeskCheckinAt,
+    scheduleExceptions,
+    schedules
+  ]);
 
   useEffect(() => {
     if (!eligibleFrontdeskSchedules.length) {
@@ -1016,6 +1044,10 @@ export function App() {
   const submitCheckin = async (event: FormEvent) => {
     event.preventDefault();
     setCheckinMessage(null);
+    if (checkinAtInput.trim() && !parsedFrontdeskCheckinAt) {
+      setCheckinMessage("Please enter a valid check-in date/time.");
+      return;
+    }
     setIsCheckingIn(true);
     try {
       const singleNumber = parseStudentNumbers(barcode);
@@ -1024,12 +1056,14 @@ export function App() {
           ? {
               studentNumbers: singleNumber,
               scheduleId: selectedCheckinScheduleId || undefined,
+              checkInAt: parsedFrontdeskCheckinAt?.toISOString(),
               source: "frontdesk",
               deviceId: "windows-admin"
             }
           : {
               barcode,
               scheduleId: selectedCheckinScheduleId || undefined,
+              checkInAt: parsedFrontdeskCheckinAt?.toISOString(),
               source: "frontdesk",
               deviceId: "windows-admin"
             };
@@ -3803,13 +3837,35 @@ export function App() {
                   {eligibleFrontdeskSchedules.length ? (
                     eligibleFrontdeskSchedules.map((schedule) => (
                       <option key={schedule.id} value={schedule.id}>
-                        {formatFrontdeskScheduleOption(schedule, checkinNow)}
+                        {formatFrontdeskScheduleOption(
+                          schedule,
+                          checkinNow,
+                          parsedFrontdeskCheckinAt ?? undefined
+                        )}
                       </option>
                     ))
                   ) : (
-                    <option value="">No classes available in next 4 hours</option>
+                    <option value="">
+                      {checkinAtInput.trim()
+                        ? "No classes found for selected date/time"
+                        : "No classes available in next 4 hours"}
+                    </option>
                   )}
                 </select>
+              </label>
+              <label className="field">
+                <span>Retroactive Check-In Time (optional)</span>
+                <input
+                  className="input"
+                  type="datetime-local"
+                  value={checkinAtInput}
+                  onChange={(event) => setCheckinAtInput(event.target.value)}
+                  disabled={isCheckingIn}
+                />
+                <span className="helper">
+                  Leave blank for live check-in rules. Set a date/time to check in by class on
+                  that day.
+                </span>
               </label>
               <button
                 className="button"
@@ -3820,8 +3876,9 @@ export function App() {
               </button>
             </form>
             <p className="muted">
-              Select the current class or any active class starting in the next 4 hours.
-              Late front desk check-in remains available for 30 minutes after class start.
+              {checkinAtInput.trim()
+                ? "Retroactive mode: class options are based on the selected date/time."
+                : "Select the current class or any active class starting in the next 4 hours. Late front desk check-in remains available for 30 minutes after class start."}
             </p>
             {checkinMessage ? <p className="error">{checkinMessage}</p> : null}
             {checkinResponse ? (
@@ -6134,8 +6191,18 @@ function getNextOccurrenceDate(schedule: ClassScheduleRecord, now: Date) {
 
 function formatFrontdeskScheduleOption(
   schedule: ClassScheduleRecord,
-  nowTimestamp: number
+  nowTimestamp: number,
+  customCheckinAt?: Date
 ) {
+  if (customCheckinAt) {
+    const timezone = safeTimeZone(schedule.timezone || "America/Toronto");
+    const dayLabel = dayOptions.find(
+      (day) => day.value === getDayOfWeek(customCheckinAt, timezone)
+    )?.label ?? "Selected day";
+
+    return `${dayLabel} ${schedule.start_time} - ${formatDisplayLabel(schedule.class_type)}`;
+  }
+
   const now = new Date(nowTimestamp);
   const delta = minutesUntilSchedule(schedule, now);
   const dayLabel = delta < 24 * 60
@@ -6180,6 +6247,19 @@ function getDayOfWeek(date: Date, timezone: string) {
   return { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[label] ?? 0;
 }
 
+function getDateInTimeZone(date: Date, timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value ?? "0000";
+  const month = parts.find((part) => part.type === "month")?.value ?? "01";
+  const day = parts.find((part) => part.type === "day")?.value ?? "01";
+  return `${year}-${month}-${day}`;
+}
+
 function getMinutesOfDay(date: Date, timezone: string) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
@@ -6211,5 +6291,14 @@ function safeTimeZone(timezone: string) {
   } catch {
     return "America/Toronto";
   }
+}
+
+function parseCheckInAtInput(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.includes("T") ? trimmed : trimmed.replace(" ", "T");
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
 }
 

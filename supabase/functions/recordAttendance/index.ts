@@ -9,6 +9,7 @@ interface AttendanceRequest {
   barcode?: string;
   studentNumbers?: number[];
   scheduleId?: string;
+  checkInAt?: string;
   deviceId?: string;
   source: "frontdesk" | "mobile";
   locationVerified?: boolean;
@@ -140,6 +141,21 @@ Deno.serve(async (req) => {
       }
     }
 
+    const frontdeskCheckInAt =
+      payload.source === "frontdesk" && payload.checkInAt
+        ? new Date(payload.checkInAt)
+        : null;
+    if (
+      payload.source === "frontdesk" &&
+      payload.checkInAt &&
+      (!frontdeskCheckInAt || Number.isNaN(frontdeskCheckInAt.getTime()))
+    ) {
+      return Response.json(
+        { error: "INVALID_CHECKIN_TIME" },
+        { status: 400, headers: corsHeaders }
+      );
+    }
+
     let schedule: ScheduleRow | null = null;
     if (payload.source === "mobile") {
       const eligible = await findMobileEligibleSchedules(supabase);
@@ -164,7 +180,10 @@ Deno.serve(async (req) => {
         schedule = eligible[0];
       }
     } else {
-      const eligible = await findFrontdeskEligibleSchedules(supabase);
+      const effectiveCheckInAt = frontdeskCheckInAt ?? new Date();
+      const eligible = frontdeskCheckInAt
+        ? await findFrontdeskSchedulesForReferenceTime(supabase, effectiveCheckInAt)
+        : await findFrontdeskEligibleSchedules(supabase, effectiveCheckInAt);
       if (!eligible.length) {
         return Response.json(
           { error: "NO_CLASS_AVAILABLE" },
@@ -208,6 +227,9 @@ Deno.serve(async (req) => {
           schedule_id: schedule.id,
           session_start_at: null,
           session_end_at: null,
+          scanned_at: frontdeskCheckInAt
+            ? frontdeskCheckInAt.toISOString()
+            : undefined,
           device_id: payload.deviceId,
           source: payload.source,
           location_verified: payload.locationVerified ?? false
@@ -310,7 +332,10 @@ async function verifyStudentAccess(
   return (data ?? []).length === studentIds.length;
 }
 
-async function findFrontdeskEligibleSchedules(client: any): Promise<ScheduleRow[]> {
+async function findFrontdeskEligibleSchedules(
+  client: any,
+  now: Date
+): Promise<ScheduleRow[]> {
   const { data, error } = await client
     .from("class_schedules")
     .select(
@@ -319,7 +344,6 @@ async function findFrontdeskEligibleSchedules(client: any): Promise<ScheduleRow[
     .eq("is_active", true);
   if (error) return [];
 
-  const now = new Date();
   const candidates = (data ?? [])
     .map((row: ScheduleRow) => ({
       row,
@@ -333,6 +357,57 @@ async function findFrontdeskEligibleSchedules(client: any): Promise<ScheduleRow[
     .sort((a, b) => a.delta - b.delta);
 
   return await removeCancelledOccurrences(client, candidates.map((item) => item.row), now);
+}
+
+async function findFrontdeskSchedulesForReferenceTime(
+  client: any,
+  referenceTime: Date
+): Promise<ScheduleRow[]> {
+  const { data, error } = await client
+    .from("class_schedules")
+    .select(
+      "id, class_type, instructor_id, day_of_week, start_time, end_time, timezone"
+    )
+    .eq("is_active", true);
+  if (error) return [];
+
+  const byDay = ((data ?? []) as ScheduleRow[]).filter((schedule) => {
+    const timezone = safeTimeZone(schedule.timezone || DEFAULT_TIMEZONE);
+    return schedule.day_of_week === getDayOfWeek(referenceTime, timezone);
+  });
+  if (!byDay.length) return [];
+
+  const occurrenceBySchedule = new Map(
+    byDay.map((schedule) => [
+      schedule.id,
+      getDateInTimeZone(referenceTime, safeTimeZone(schedule.timezone || DEFAULT_TIMEZONE))
+    ])
+  );
+  const occurrenceDates = [...new Set([...occurrenceBySchedule.values()])];
+
+  const { data: exceptions, error: exceptionError } = await client
+    .from("class_schedule_exceptions")
+    .select("schedule_id, occurrence_date")
+    .in("schedule_id", byDay.map((schedule) => schedule.id))
+    .in("occurrence_date", occurrenceDates);
+
+  if (exceptionError) {
+    return byDay.sort((a, b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time));
+  }
+
+  const cancelled = new Set(
+    ((exceptions as Array<{ schedule_id: string; occurrence_date: string }> | null) ?? []).map(
+      (item) => `${item.schedule_id}:${item.occurrence_date}`
+    )
+  );
+
+  return byDay
+    .filter((schedule) => {
+      const occurrence = occurrenceBySchedule.get(schedule.id);
+      if (!occurrence) return true;
+      return !cancelled.has(`${schedule.id}:${occurrence}`);
+    })
+    .sort((a, b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time));
 }
 
 async function findMobileEligibleSchedules(client: any): Promise<ScheduleRow[]> {
@@ -466,6 +541,19 @@ function normalizeStudent(student: StudentRow) {
     lastName: student.last_name ?? null,
     membershipStanding: student.membership_standing
   };
+}
+
+function getDateInTimeZone(date: Date, timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value ?? "0000";
+  const month = parts.find((part) => part.type === "month")?.value ?? "01";
+  const day = parts.find((part) => part.type === "day")?.value ?? "01";
+  return `${year}-${month}-${day}`;
 }
 
 function safeTimeZone(timezone: string) {

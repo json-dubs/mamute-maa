@@ -24,6 +24,7 @@ export default function NewsScreen() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [messageTone, setMessageTone] = useState<"error" | "warning" | "success">("error");
   const [posts, setPosts] = useState<NewsPostRow[]>([]);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -38,6 +39,7 @@ export default function NewsScreen() {
   const load = useCallback(async () => {
     setLoading(true);
     setMessage(null);
+    setMessageTone("error");
     try {
       const { data, error } = await supabase
         .from("mamute_news")
@@ -49,6 +51,7 @@ export default function NewsScreen() {
       if (error) throw error;
       setPosts((data as NewsPostRow[]) ?? []);
     } catch (error: any) {
+      setMessageTone("error");
       setMessage(error?.message ?? "Failed to load news.");
     } finally {
       setLoading(false);
@@ -69,10 +72,12 @@ export default function NewsScreen() {
     const trimmedTitle = title.trim();
     const trimmedDescription = description.trim();
     if (!trimmedTitle || !trimmedDescription) {
+      setMessageTone("error");
       setMessage("Title and description are required.");
       return;
     }
     if (!session) {
+      setMessageTone("error");
       setMessage("You must be signed in.");
       return;
     }
@@ -81,7 +86,9 @@ export default function NewsScreen() {
 
     setSaving(true);
     setMessage(null);
+    setMessageTone("error");
     let statusMessage = "Post created.";
+    let statusTone: "error" | "warning" | "success" = "success";
     let uploadedAttachmentPath: string | null = null;
     try {
       let attachmentPath: string | null = null;
@@ -132,6 +139,7 @@ export default function NewsScreen() {
         });
         if (pushError) throw pushError;
       } catch (pushError: any) {
+        statusTone = "warning";
         statusMessage = `Post created, but push notification failed: ${getErrorMessage(pushError)}`;
       }
 
@@ -140,11 +148,13 @@ export default function NewsScreen() {
       setExpiresAt(null);
       setSelectedImage(null);
       await load();
+      setMessageTone(statusTone);
       setMessage(statusMessage);
     } catch (error: any) {
       if (uploadedAttachmentPath) {
         await supabase.storage.from("mamute-news").remove([uploadedAttachmentPath]);
       }
+      setMessageTone("error");
       setMessage(error?.message ?? "Failed to create news post.");
     } finally {
       setSaving(false);
@@ -154,6 +164,7 @@ export default function NewsScreen() {
   const selectImage = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
+      setMessageTone("error");
       setMessage("Media permission is required to attach images.");
       return;
     }
@@ -166,6 +177,7 @@ export default function NewsScreen() {
     if (result.canceled || !result.assets?.length) return;
     const asset = result.assets[0];
     if (!asset.base64) {
+      setMessageTone("error");
       setMessage("Could not read image data from device.");
       return;
     }
@@ -192,6 +204,7 @@ export default function NewsScreen() {
 
   const remove = async (post: NewsPostRow) => {
     setMessage(null);
+    setMessageTone("error");
     try {
       if (post.attachment_path) {
         await supabase.storage.from("mamute-news").remove([post.attachment_path]);
@@ -200,6 +213,7 @@ export default function NewsScreen() {
       if (error) throw error;
       await load();
     } catch (error: any) {
+      setMessageTone("error");
       setMessage(error?.message ?? "Failed to delete post.");
     }
   };
@@ -318,7 +332,20 @@ export default function NewsScreen() {
           <Pressable style={styles.button} onPress={() => void submit()} disabled={saving}>
             <Text style={styles.buttonText}>{saving ? "Posting..." : "Post News"}</Text>
           </Pressable>
-          {message ? <Text style={styles.message}>{message}</Text> : null}
+          {message ? (
+            <Text
+              style={{
+                ...styles.message,
+                ...(messageTone === "success"
+                  ? styles.messageSuccess
+                  : messageTone === "warning"
+                    ? styles.messageWarning
+                    : styles.messageError)
+              }}
+            >
+              {message}
+            </Text>
+          ) : null}
         </Card>
 
         <Card style={{ marginTop: 12 }}>
@@ -528,7 +555,16 @@ const styles = StyleSheet.create({
     fontWeight: "800"
   },
   message: {
+    fontWeight: "600"
+  },
+  messageError: {
     color: "#fca5a5"
+  },
+  messageWarning: {
+    color: "#fcd34d"
+  },
+  messageSuccess: {
+    color: "#86efac"
   },
   postCard: {
     marginTop: 8,

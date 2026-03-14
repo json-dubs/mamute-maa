@@ -39,6 +39,15 @@ const config: ExpoConfig = {
   },
   plugins: [
     [
+      "expo-splash-screen",
+      {
+        image: "./assets/images/MamuteLogoHeader.png",
+        imageWidth: 200,
+        resizeMode: "contain",
+        backgroundColor: "#ffffff"
+      }
+    ],
+    [
       "expo-notifications",
       {
         icon: "./assets/images/notification-icon.png",
