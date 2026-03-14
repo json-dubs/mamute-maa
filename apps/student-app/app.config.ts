@@ -14,6 +14,10 @@ const config: ExpoConfig = {
     resizeMode: "contain",
     backgroundColor: "#ffffff"
   },
+  notification: {
+    icon: "./assets/images/notification-icon.png",
+    color: "#e11d2e"
+  },
   ios: {
     supportsTablet: true,
     infoPlist: {
@@ -42,7 +46,7 @@ const config: ExpoConfig = {
       "expo-splash-screen",
       {
         image: "./assets/images/MamuteLogoHeader.png",
-        imageWidth: 200,
+        imageWidth: 140,
         resizeMode: "contain",
         backgroundColor: "#ffffff"
       }

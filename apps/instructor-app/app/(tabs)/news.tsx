@@ -90,6 +90,7 @@ export default function NewsScreen() {
     let statusMessage = "Post created.";
     let statusTone: "error" | "warning" | "success" = "success";
     let uploadedAttachmentPath: string | null = null;
+    let postCreated = false;
     try {
       let attachmentPath: string | null = null;
       let attachmentName: string | null = null;
@@ -126,6 +127,7 @@ export default function NewsScreen() {
         created_by: session.user.id
       });
       if (error) throw error;
+      postCreated = true;
 
       try {
         const { error: pushError } = await supabase.functions.invoke("sendNotification", {
@@ -147,15 +149,26 @@ export default function NewsScreen() {
       setDescription("");
       setExpiresAt(null);
       setSelectedImage(null);
-      await load();
+      try {
+        await load();
+      } catch (refreshError: any) {
+        const refreshMessage = getErrorMessage(refreshError);
+        statusTone = "warning";
+        statusMessage = `${statusMessage} Could not refresh post list: ${refreshMessage}`;
+      }
       setMessageTone(statusTone);
       setMessage(statusMessage);
     } catch (error: any) {
-      if (uploadedAttachmentPath) {
+      if (uploadedAttachmentPath && !postCreated) {
         await supabase.storage.from("mamute-news").remove([uploadedAttachmentPath]);
       }
-      setMessageTone("error");
-      setMessage(error?.message ?? "Failed to create news post.");
+      if (postCreated) {
+        setMessageTone("warning");
+        setMessage(`Post created, but follow-up action failed: ${getErrorMessage(error)}`);
+      } else {
+        setMessageTone("error");
+        setMessage(error?.message ?? "Failed to create news post.");
+      }
     } finally {
       setSaving(false);
     }
