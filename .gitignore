@@ -16,5 +16,9 @@ npm-debug.log*
 apps/*/npm-debug.log*
 apps/*/.env*
 apps/*/.supabase.env
+apps/*/google-services.json
+apps/*/GoogleService-Info.plist
+google-services.json
+GoogleService-Info.plist
 supabase/.branches
 supabase/.temp
