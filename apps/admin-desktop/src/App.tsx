@@ -3255,6 +3255,170 @@ export function App() {
     setStudentReportMessage(null);
   };
 
+  const printStudentReport = () => {
+    if (!studentReportRows.length) {
+      setStudentReportMessage("Generate a student report with results before printing.");
+      return;
+    }
+
+    const rowsHtml = studentReportRows
+      .map((student) => {
+        const guardians = getStudentGuardians(student.id);
+        const guardianOne = guardians[0];
+        const guardianTwo = guardians[1];
+        return `<tr>
+          <td>${escapeHtml(student.id)}</td>
+          <td>${student.student_number}</td>
+          <td>${escapeHtml(student.first_name ?? "")}</td>
+          <td>${escapeHtml(student.last_name ?? "")}</td>
+          <td>${escapeHtml(student.birth_date ?? "")}</td>
+          <td>${calculateAgeFromBirthDate(student.birth_date) ?? ""}</td>
+          <td>${escapeHtml(student.email ?? "")}</td>
+          <td>${escapeHtml(student.membership_type)}</td>
+          <td>${escapeHtml(student.membership_standing)}</td>
+          <td>${escapeHtml(
+            student.created_at ? new Date(student.created_at).toLocaleString() : ""
+          )}</td>
+          <td>${escapeHtml(getGuardianName(guardianOne) || "")}${
+            guardianOne?.guardian_email ? ` (${escapeHtml(guardianOne.guardian_email)})` : ""
+          }</td>
+          <td>${escapeHtml(getGuardianName(guardianTwo) || "")}${
+            guardianTwo?.guardian_email ? ` (${escapeHtml(guardianTwo.guardian_email)})` : ""
+          }</td>
+        </tr>`;
+      })
+      .join("");
+
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow?.document;
+    if (!doc || !iframe.contentWindow) {
+      document.body.removeChild(iframe);
+      setStudentReportMessage("Failed to open print preview.");
+      return;
+    }
+
+    doc.open();
+    doc.write(`
+      <html>
+        <head>
+          <title>Mamute Student Report</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              color: #111827;
+              margin: 24px;
+            }
+            h1 {
+              margin: 0 0 8px;
+              font-size: 28px;
+            }
+            p {
+              margin: 0 0 8px;
+              line-height: 1.4;
+            }
+            .meta {
+              color: #4b5563;
+              margin-bottom: 16px;
+            }
+            .summary {
+              display: flex;
+              gap: 16px;
+              flex-wrap: wrap;
+              margin: 16px 0 18px;
+            }
+            .summary-card {
+              border: 1px solid #d1d5db;
+              border-radius: 10px;
+              padding: 10px 12px;
+              min-width: 180px;
+            }
+            .summary-label {
+              display: block;
+              font-size: 11px;
+              color: #6b7280;
+              text-transform: uppercase;
+              letter-spacing: 0.06em;
+              margin-bottom: 4px;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+            }
+            th, td {
+              text-align: left;
+              border-bottom: 1px solid #e5e7eb;
+              padding: 8px 6px;
+              font-size: 12px;
+              vertical-align: top;
+            }
+            th {
+              color: #374151;
+              font-size: 11px;
+              text-transform: uppercase;
+              letter-spacing: 0.05em;
+            }
+          </style>
+        </head>
+        <body>
+          <h1>Mamute Student Report</h1>
+          <p class="meta">Generated ${escapeHtml(
+            studentReportGeneratedAt
+              ? new Date(studentReportGeneratedAt).toLocaleString()
+              : new Date().toLocaleString()
+          )}</p>
+          <div class="summary">
+            <div class="summary-card">
+              <span class="summary-label">Filters</span>
+              <strong>${escapeHtml(studentReportLabel)}</strong>
+            </div>
+            <div class="summary-card">
+              <span class="summary-label">Students</span>
+              <strong>${studentReportRows.length}</strong>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>#</th>
+                <th>First</th>
+                <th>Last</th>
+                <th>Birthday</th>
+                <th>Age</th>
+                <th>Email</th>
+                <th>Type</th>
+                <th>Standing</th>
+                <th>Created</th>
+                <th>Guardian #1</th>
+                <th>Guardian #2</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </body>
+      </html>
+    `);
+    doc.close();
+
+    iframe.onload = () => {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+      window.setTimeout(() => {
+        document.body.removeChild(iframe);
+      }, 1000);
+    };
+
+    setStudentReportMessage(null);
+  };
+
   const filteredBadgeStudents = students.filter((student) => {
     const query = badgeStudentQuery.trim().toLowerCase();
     if (!query) return true;
@@ -4887,6 +5051,14 @@ export function App() {
                   disabled={!studentReportRows.length}
                 >
                   Export CSV
+                </button>
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={printStudentReport}
+                  disabled={!studentReportRows.length}
+                >
+                  Print Report
                 </button>
               </div>
             </form>
