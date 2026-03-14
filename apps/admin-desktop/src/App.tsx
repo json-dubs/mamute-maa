@@ -32,6 +32,8 @@ type StudentRecord = {
   last_name: string | null;
   birth_date: string | null;
   email: string | null;
+  created_by: string | null;
+  created_at: string;
   membership_type:
     | "adults-unlimited"
     | "kids-unlimited"
@@ -41,6 +43,9 @@ type StudentRecord = {
     | "kids-limited-once-weekly";
   membership_standing: "active" | "inactive" | "overdue";
 };
+
+type StudentReportMembershipTypeFilter = StudentRecord["membership_type"] | "all";
+type StudentReportMembershipStandingFilter = StudentRecord["membership_standing"] | "all";
 
 type InstructorRecord = {
   id: string;
@@ -326,6 +331,14 @@ export function App() {
   const [isStudentsLoading, setIsStudentsLoading] = useState(false);
   const [editingStudentId, setEditingStudentId] = useState<string | null>(null);
   const [studentQuery, setStudentQuery] = useState("");
+  const [studentReportMembershipTypeFilter, setStudentReportMembershipTypeFilter] =
+    useState<StudentReportMembershipTypeFilter>("all");
+  const [studentReportMembershipStandingFilter, setStudentReportMembershipStandingFilter] =
+    useState<StudentReportMembershipStandingFilter>("all");
+  const [studentReportRows, setStudentReportRows] = useState<StudentRecord[]>([]);
+  const [studentReportLabel, setStudentReportLabel] = useState("All membership types and standings");
+  const [studentReportGeneratedAt, setStudentReportGeneratedAt] = useState<string | null>(null);
+  const [studentReportMessage, setStudentReportMessage] = useState<string | null>(null);
   const [csvInput, setCsvInput] = useState("");
   const [isCsvImporting, setIsCsvImporting] = useState(false);
   const [studentNumber, setStudentNumber] = useState("");
@@ -3091,6 +3104,51 @@ export function App() {
       .filter((item) => Number.isFinite(item));
   };
 
+  const guardiansByStudentId = useMemo(() => {
+    const map = new Map<string, StudentGuardianRecord[]>();
+    for (const guardian of allGuardianRows) {
+      const existing = map.get(guardian.student_id);
+      if (existing) {
+        existing.push(guardian);
+      } else {
+        map.set(guardian.student_id, [guardian]);
+      }
+    }
+    return map;
+  }, [allGuardianRows]);
+
+  const getStudentGuardians = (studentId: string) => guardiansByStudentId.get(studentId) ?? [];
+
+  const getGuardianName = (guardian?: StudentGuardianRecord) =>
+    guardian ? [guardian.guardian_first_name, guardian.guardian_last_name].filter(Boolean).join(" ") : "";
+
+  const buildStudentReportLabel = (
+    membershipType: StudentReportMembershipTypeFilter,
+    membershipStanding: StudentReportMembershipStandingFilter
+  ) => {
+    const typeLabel =
+      membershipType === "all" ? "all membership types" : formatDisplayLabel(membershipType);
+    const standingLabel =
+      membershipStanding === "all"
+        ? "all standings"
+        : formatDisplayLabel(membershipStanding);
+    return `${typeLabel} | ${standingLabel}`;
+  };
+
+  const filterStudentReportRows = (
+    membershipType: StudentReportMembershipTypeFilter,
+    membershipStanding: StudentReportMembershipStandingFilter
+  ) =>
+    students
+      .filter((student) => {
+        const membershipTypeMatch =
+          membershipType === "all" || student.membership_type === membershipType;
+        const membershipStandingMatch =
+          membershipStanding === "all" || student.membership_standing === membershipStanding;
+        return membershipTypeMatch && membershipStandingMatch;
+      })
+      .sort((a, b) => a.student_number - b.student_number);
+
   const filteredStudents = students.filter((student) => {
     const query = studentQuery.trim().toLowerCase();
     if (!query) return true;
@@ -3103,6 +3161,99 @@ export function App() {
       (student.email ?? "").toLowerCase().includes(query)
     );
   });
+
+  const runStudentReport = () => {
+    const rows = filterStudentReportRows(
+      studentReportMembershipTypeFilter,
+      studentReportMembershipStandingFilter
+    );
+    setStudentReportRows(rows);
+    setStudentReportLabel(
+      buildStudentReportLabel(
+        studentReportMembershipTypeFilter,
+        studentReportMembershipStandingFilter
+      )
+    );
+    setStudentReportGeneratedAt(new Date().toISOString());
+    setStudentReportMessage(rows.length ? null : "No students matched the selected filters.");
+  };
+
+  const resetStudentReport = () => {
+    const resetType: StudentReportMembershipTypeFilter = "all";
+    const resetStanding: StudentReportMembershipStandingFilter = "all";
+    setStudentReportMembershipTypeFilter(resetType);
+    setStudentReportMembershipStandingFilter(resetStanding);
+    const rows = filterStudentReportRows(resetType, resetStanding);
+    setStudentReportRows(rows);
+    setStudentReportLabel(buildStudentReportLabel(resetType, resetStanding));
+    setStudentReportGeneratedAt(new Date().toISOString());
+    setStudentReportMessage(null);
+  };
+
+  const exportStudentReportCsv = () => {
+    if (!studentReportRows.length) {
+      setStudentReportMessage("Generate a student report with results before exporting.");
+      return;
+    }
+
+    const csv = [
+      ["Report Filters", studentReportLabel],
+      ["Generated At", studentReportGeneratedAt ? new Date(studentReportGeneratedAt).toLocaleString() : new Date().toLocaleString()],
+      [],
+      [
+        "id",
+        "student_number",
+        "first_name",
+        "last_name",
+        "birth_date",
+        "age",
+        "email",
+        "membership_type",
+        "membership_standing",
+        "created_by",
+        "created_at",
+        "guardian_1_name",
+        "guardian_1_email",
+        "guardian_2_name",
+        "guardian_2_email"
+      ],
+      ...studentReportRows.map((student) => {
+        const guardians = getStudentGuardians(student.id);
+        const guardianOne = guardians[0];
+        const guardianTwo = guardians[1];
+        return [
+          student.id,
+          String(student.student_number),
+          student.first_name ?? "",
+          student.last_name ?? "",
+          student.birth_date ?? "",
+          String(calculateAgeFromBirthDate(student.birth_date) ?? ""),
+          student.email ?? "",
+          student.membership_type,
+          student.membership_standing,
+          student.created_by ?? "",
+          student.created_at ? new Date(student.created_at).toLocaleString() : "",
+          getGuardianName(guardianOne) || "",
+          guardianOne?.guardian_email ?? "",
+          getGuardianName(guardianTwo) || "",
+          guardianTwo?.guardian_email ?? ""
+        ];
+      })
+    ]
+      .map((row) => row.map((value) => toCsvCell(String(value ?? ""))).join(","))
+      .join("\r\n");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `mamute-students-${studentReportMembershipTypeFilter}-${studentReportMembershipStandingFilter}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    setStudentReportMessage(null);
+  };
 
   const filteredBadgeStudents = students.filter((student) => {
     const query = badgeStudentQuery.trim().toLowerCase();
@@ -4661,6 +4812,163 @@ export function App() {
           </form>
           {studentsMessage ? <p className="error">{studentsMessage}</p> : null}
           {isStudentsLoading ? <p className="muted">Loading students...</p> : null}
+          <div className="panel nested utility-panel">
+            <div className="section-header">
+              <div className="section-copy">
+                <h3>Student Report</h3>
+                <p className="muted">
+                  Generate a filtered report of all student fields by membership type and standing.
+                </p>
+              </div>
+            </div>
+            <form
+              className="form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                runStudentReport();
+              }}
+            >
+              <label className="field">
+                <span>Membership Type</span>
+                <select
+                  className="input"
+                  value={studentReportMembershipTypeFilter}
+                  onChange={(event) =>
+                    setStudentReportMembershipTypeFilter(
+                      event.target.value as StudentReportMembershipTypeFilter
+                    )
+                  }
+                  disabled={!session}
+                >
+                  <option value="all">All membership types</option>
+                  {membershipTypes.map((type) => (
+                    <option key={type} value={type}>
+                      {formatDisplayLabel(type)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Membership Standing</span>
+                <select
+                  className="input"
+                  value={studentReportMembershipStandingFilter}
+                  onChange={(event) =>
+                    setStudentReportMembershipStandingFilter(
+                      event.target.value as StudentReportMembershipStandingFilter
+                    )
+                  }
+                  disabled={!session}
+                >
+                  <option value="all">All standings</option>
+                  {membershipStandings.map((standing) => (
+                    <option key={standing} value={standing}>
+                      {formatDisplayLabel(standing)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="form-actions">
+                <button className="button" type="submit" disabled={!session}>
+                  Generate Report
+                </button>
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={resetStudentReport}
+                  disabled={!session}
+                >
+                  Reset
+                </button>
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={exportStudentReportCsv}
+                  disabled={!studentReportRows.length}
+                >
+                  Export CSV
+                </button>
+              </div>
+            </form>
+            <div className="report-summary-grid">
+              <div className="report-summary-card">
+                <span className="report-summary-label">Filters</span>
+                <strong>{studentReportLabel}</strong>
+              </div>
+              <div className="report-summary-card">
+                <span className="report-summary-label">Students</span>
+                <strong>{studentReportRows.length}</strong>
+              </div>
+              <div className="report-summary-card">
+                <span className="report-summary-label">Generated</span>
+                <strong>
+                  {studentReportGeneratedAt
+                    ? new Date(studentReportGeneratedAt).toLocaleString()
+                    : "Not generated yet"}
+                </strong>
+              </div>
+            </div>
+            {studentReportMessage ? <p className="error">{studentReportMessage}</p> : null}
+            {studentReportRows.length ? (
+              <div className="results">
+                <table className="table compact">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>#</th>
+                      <th>First</th>
+                      <th>Last</th>
+                      <th>Birthday</th>
+                      <th>Age</th>
+                      <th>Email</th>
+                      <th>Membership Type</th>
+                      <th>Membership Standing</th>
+                      <th>Created At</th>
+                      <th>Guardian #1</th>
+                      <th>Guardian #2</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {studentReportRows.map((student) => {
+                      const guardians = getStudentGuardians(student.id);
+                      const guardianOne = guardians[0];
+                      const guardianTwo = guardians[1];
+                      return (
+                        <tr key={`report-${student.id}`}>
+                          <td>{student.id}</td>
+                          <td>{student.student_number}</td>
+                          <td>{student.first_name ?? "-"}</td>
+                          <td>{student.last_name ?? "-"}</td>
+                          <td>{student.birth_date ?? "-"}</td>
+                          <td>{calculateAgeFromBirthDate(student.birth_date) ?? "-"}</td>
+                          <td>{student.email ?? "-"}</td>
+                          <td>{student.membership_type}</td>
+                          <td>{student.membership_standing}</td>
+                          <td>
+                            {student.created_at
+                              ? new Date(student.created_at).toLocaleString()
+                              : "-"}
+                          </td>
+                          <td>
+                            {getGuardianName(guardianOne) || "-"}
+                            {guardianOne?.guardian_email ? ` (${guardianOne.guardian_email})` : ""}
+                          </td>
+                          <td>
+                            {getGuardianName(guardianTwo) || "-"}
+                            {guardianTwo?.guardian_email ? ` (${guardianTwo.guardian_email})` : ""}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="muted">
+                Set your filters and generate the student report to view results.
+              </p>
+            )}
+          </div>
           {filteredStudents.length ? (
             <div className="results">
               <table className="table">
@@ -4689,40 +4997,8 @@ export function App() {
                       <td>{calculateAgeFromBirthDate(student.birth_date) ?? "-"}</td>
                       <td>{student.membership_type}</td>
                       <td>{student.membership_standing}</td>
-                      <td>
-                        {(() => {
-                          const guardians = allGuardianRows.filter(
-                            (guardian) => guardian.student_id === student.id
-                          );
-                          const firstGuardian = guardians[0];
-                          const guardianLabel = firstGuardian
-                            ? [
-                                firstGuardian.guardian_first_name,
-                                firstGuardian.guardian_last_name
-                              ]
-                                .filter(Boolean)
-                                .join(" ")
-                            : "";
-                          return guardianLabel || "-";
-                        })()}
-                      </td>
-                      <td>
-                        {(() => {
-                          const guardians = allGuardianRows.filter(
-                            (guardian) => guardian.student_id === student.id
-                          );
-                          const extraGuardian = guardians[1];
-                          const guardianLabel = extraGuardian
-                            ? [
-                                extraGuardian.guardian_first_name,
-                                extraGuardian.guardian_last_name
-                              ]
-                                .filter(Boolean)
-                                .join(" ")
-                            : "";
-                          return guardianLabel || "-";
-                        })()}
-                      </td>
+                      <td>{getGuardianName(getStudentGuardians(student.id)[0]) || "-"}</td>
+                      <td>{getGuardianName(getStudentGuardians(student.id)[1]) || "-"}</td>
                       <td>
                         <div className="row-actions">
                           <button
