@@ -5,17 +5,30 @@ import { HeroHeader } from "../../components/HeroHeader";
 import { getSupabaseClient } from "@mamute/api";
 import { useAuth } from "../../lib/auth";
 
-type AdminRow = {
-  first_name: string;
-  last_name: string;
+type AdminProfile = {
+  firstName: string;
+  lastName: string;
   email: string;
-  created_at: string;
+  createdAt: string | null;
+};
+
+type AdminRowModern = {
+  first_name: string | null;
+  last_name: string | null;
+  email: string | null;
+  created_at: string | null;
+};
+
+type AdminRowLegacy = {
+  full_name: string | null;
+  email: string | null;
+  created_at: string | null;
 };
 
 export default function AccountScreen() {
   const supabase = useMemo(() => getSupabaseClient(), []);
   const { session, signOut } = useAuth();
-  const [adminProfile, setAdminProfile] = useState<AdminRow | null>(null);
+  const [adminProfile, setAdminProfile] = useState<AdminProfile | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -32,8 +45,58 @@ export default function AccountScreen() {
         .select("first_name, last_name, email, created_at")
         .eq("user_id", session.user.id)
         .maybeSingle();
-      if (error) throw error;
-      setAdminProfile((data as AdminRow | null) ?? null);
+      if (error) {
+        const isMissingFirstName =
+          typeof error.message === "string" &&
+          error.message.toLowerCase().includes("admins.first_name");
+        if (!isMissingFirstName) throw error;
+
+        const fallback = await supabase
+          .from("admins")
+          .select("full_name, email, created_at")
+          .eq("user_id", session.user.id)
+          .maybeSingle();
+        if (fallback.error) throw fallback.error;
+        const legacy = (fallback.data as AdminRowLegacy | null) ?? null;
+        const parsed = parseLegacyFullName(legacy?.full_name ?? null);
+        setAdminProfile({
+          firstName:
+            parsed.firstName ??
+            String(session.user.user_metadata?.first_name ?? session.user.user_metadata?.display_name ?? "")
+              .trim(),
+          lastName:
+            parsed.lastName ??
+            String(session.user.user_metadata?.last_name ?? "").trim(),
+          email: legacy?.email ?? session.user.email ?? "",
+          createdAt: legacy?.created_at ?? null
+        });
+        return;
+      }
+
+      const modern = (data as AdminRowModern | null) ?? null;
+      if (!modern) {
+        setAdminProfile({
+          firstName: String(
+            session.user.user_metadata?.first_name ?? session.user.user_metadata?.display_name ?? ""
+          ).trim(),
+          lastName: String(session.user.user_metadata?.last_name ?? "").trim(),
+          email: session.user.email ?? "",
+          createdAt: null
+        });
+        return;
+      }
+
+      setAdminProfile({
+        firstName:
+          (modern.first_name ?? "").trim() ||
+          String(session.user.user_metadata?.first_name ?? session.user.user_metadata?.display_name ?? "")
+            .trim(),
+        lastName:
+          (modern.last_name ?? "").trim() ||
+          String(session.user.user_metadata?.last_name ?? "").trim(),
+        email: modern.email ?? session.user.email ?? "",
+        createdAt: modern.created_at ?? null
+      });
     } catch (error: any) {
       setMessage(error?.message ?? "Failed to load account.");
     } finally {
@@ -71,12 +134,14 @@ export default function AccountScreen() {
           {!loading && adminProfile ? (
             <>
               <Text style={styles.meta}>
-                Name: {[adminProfile.first_name, adminProfile.last_name].join(" ")}
+                Name: {[adminProfile.firstName, adminProfile.lastName].filter(Boolean).join(" ") || "Admin"}
               </Text>
-              <Text style={styles.meta}>Email: {adminProfile.email}</Text>
-              <Text style={styles.meta}>
-                Admin since: {new Date(adminProfile.created_at).toLocaleDateString()}
-              </Text>
+              <Text style={styles.meta}>Email: {adminProfile.email || session?.user.email || "Not available"}</Text>
+              {adminProfile.createdAt ? (
+                <Text style={styles.meta}>
+                  Admin since: {new Date(adminProfile.createdAt).toLocaleDateString()}
+                </Text>
+              ) : null}
             </>
           ) : null}
           {!loading && !adminProfile ? (
@@ -125,3 +190,18 @@ const styles = StyleSheet.create({
     color: "#fca5a5"
   }
 });
+
+function parseLegacyFullName(fullName: string | null) {
+  if (!fullName) {
+    return { firstName: null as string | null, lastName: null as string | null };
+  }
+  const normalized = fullName.trim();
+  if (!normalized) {
+    return { firstName: null as string | null, lastName: null as string | null };
+  }
+  const [first, ...rest] = normalized.split(/\s+/);
+  return {
+    firstName: first ?? null,
+    lastName: rest.length ? rest.join(" ") : null
+  };
+}

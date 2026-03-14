@@ -5,8 +5,9 @@ export async function fetchSchedules(options?: {
   includeCancelled?: boolean;
 }): Promise<ClassScheduleTemplate[]> {
   const supabase = getSupabaseClient();
+  const instructorsBucket = "mamute-instructors";
   let queryWithInstructor = supabase.from("class_schedules").select(
-    "id, class_type, instructor_id, day_of_week, start_time, end_time, timezone, is_active, instructors:instructor_id(first_name, last_name)"
+    "id, class_type, instructor_id, day_of_week, start_time, end_time, timezone, is_active, instructors:instructor_id(first_name, last_name, about, image_path, image_name, image_mime_type)"
   );
   queryWithInstructor = queryWithInstructor
     .order("day_of_week", { ascending: true })
@@ -91,7 +92,30 @@ export async function fetchSchedules(options?: {
         instructorLastName:
           (Array.isArray(row.instructors)
             ? row.instructors[0]?.last_name
-            : row.instructors?.last_name) ?? null
+            : row.instructors?.last_name) ?? null,
+        instructorAbout:
+          (Array.isArray(row.instructors)
+            ? row.instructors[0]?.about
+            : row.instructors?.about) ?? null,
+        instructorImagePath:
+          (Array.isArray(row.instructors)
+            ? row.instructors[0]?.image_path
+            : row.instructors?.image_path) ?? null,
+        instructorImageName:
+          (Array.isArray(row.instructors)
+            ? row.instructors[0]?.image_name
+            : row.instructors?.image_name) ?? null,
+        instructorImageMimeType:
+          (Array.isArray(row.instructors)
+            ? row.instructors[0]?.image_mime_type
+            : row.instructors?.image_mime_type) ?? null,
+        instructorImageUrl: (() => {
+          const path = (Array.isArray(row.instructors)
+            ? row.instructors[0]?.image_path
+            : row.instructors?.image_path) as string | null | undefined;
+          if (!path) return null;
+          return supabase.storage.from(instructorsBucket).getPublicUrl(path).data.publicUrl;
+        })()
       } satisfies ClassScheduleTemplate;
     }) ?? [];
 

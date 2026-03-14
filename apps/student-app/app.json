@@ -21,6 +21,7 @@
     },
     "android": {
       "package": "com.jsondubs.mamutestudent",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#ffffff"

@@ -154,6 +154,11 @@ create table if not exists instructors (
   created_at timestamptz default now()
 );
 
+alter table instructors add column if not exists about text;
+alter table instructors add column if not exists image_path text;
+alter table instructors add column if not exists image_name text;
+alter table instructors add column if not exists image_mime_type text;
+
 create table if not exists instructor_qualifications (
   instructor_id uuid references instructors(id) on delete cascade,
   class_type text not null,
@@ -1270,6 +1275,11 @@ values ('mamute-shop', 'mamute-shop', true)
 on conflict (id) do update
 set public = excluded.public;
 
+insert into storage.buckets (id, name, public)
+values ('mamute-instructors', 'mamute-instructors', true)
+on conflict (id) do update
+set public = excluded.public;
+
 drop policy if exists "admins manage mamute news files" on storage.objects;
 create policy "admins manage mamute news files"
 on storage.objects
@@ -1306,6 +1316,19 @@ using (
 )
 with check (
   bucket_id = 'mamute-shop'
+  and exists (select 1 from admins a where a.user_id = auth.uid())
+);
+
+drop policy if exists "admins manage mamute instructor files" on storage.objects;
+create policy "admins manage mamute instructor files"
+on storage.objects
+for all
+using (
+  bucket_id = 'mamute-instructors'
+  and exists (select 1 from admins a where a.user_id = auth.uid())
+)
+with check (
+  bucket_id = 'mamute-instructors'
   and exists (select 1 from admins a where a.user_id = auth.uid())
 );
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, View } from "react-native";
+import { Image, Modal, Pressable, ScrollView, View } from "react-native";
 import { Badge, Card, Row, Screen, Text, uiColors } from "@mamute/ui";
 import { HeroHeader } from "../../components/HeroHeader";
 import { useRealtimeRefresh } from "../../components/useRealtimeRefresh";
@@ -7,6 +7,11 @@ import { fetchSchedules } from "@mamute/api";
 import { ClassScheduleTemplate } from "@mamute/types";
 
 type ViewMode = "day" | "week";
+type InstructorBioModalState = {
+  name: string;
+  about: string | null;
+  imageUrl: string | null;
+};
 
 const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -15,6 +20,9 @@ export default function ScheduleScreen() {
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("week");
   const [selectedDay, setSelectedDay] = useState<number>(new Date().getDay());
+  const [selectedInstructorBio, setSelectedInstructorBio] = useState<InstructorBioModalState | null>(
+    null
+  );
 
   const groupedByDay = useMemo(() => {
     const base = new Map<number, ClassScheduleTemplate[]>(
@@ -50,6 +58,19 @@ export default function ScheduleScreen() {
     tables: ["class_schedules", "class_schedule_exceptions", "instructors"],
     onRefresh: load
   });
+
+  const openInstructorBio = (schedule: ClassScheduleTemplate) => {
+    const name = [schedule.instructorFirstName, schedule.instructorLastName]
+      .filter(Boolean)
+      .join(" ");
+    if (!name) return;
+
+    setSelectedInstructorBio({
+      name,
+      about: schedule.instructorAbout ?? null,
+      imageUrl: schedule.instructorImageUrl ?? null
+    });
+  };
 
   return (
     <Screen>
@@ -97,7 +118,11 @@ export default function ScheduleScreen() {
               <Text style={{ fontWeight: "700" }}>{dayLabels[selectedDay]} Classes</Text>
               {(groupedByDay.get(selectedDay) ?? []).length ? (
                 (groupedByDay.get(selectedDay) ?? []).map((schedule) => (
-                  <ScheduleBlock key={schedule.id} schedule={schedule} />
+                  <ScheduleBlock
+                    key={schedule.id}
+                    schedule={schedule}
+                    onPressInstructor={openInstructorBio}
+                  />
                 ))
               ) : (
                 <Text style={{ color: uiColors.muted }}>No classes scheduled.</Text>
@@ -113,7 +138,12 @@ export default function ScheduleScreen() {
                 <Text style={{ fontWeight: "700" }}>{label}</Text>
                 {(groupedByDay.get(dayIndex) ?? []).length ? (
                   (groupedByDay.get(dayIndex) ?? []).map((schedule) => (
-                    <ScheduleBlock key={schedule.id} schedule={schedule} compact />
+                    <ScheduleBlock
+                      key={schedule.id}
+                      schedule={schedule}
+                      compact
+                      onPressInstructor={openInstructorBio}
+                    />
                   ))
                 ) : (
                   <Text style={{ color: uiColors.muted }}>No classes</Text>
@@ -123,22 +153,79 @@ export default function ScheduleScreen() {
           </View>
         </ScrollView>
       )}
+      <Modal
+        visible={Boolean(selectedInstructorBio)}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setSelectedInstructorBio(null)}
+      >
+        <Pressable
+          style={{
+            flex: 1,
+            backgroundColor: "rgba(0,0,0,0.68)",
+            padding: 20,
+            justifyContent: "center"
+          }}
+          onPress={() => setSelectedInstructorBio(null)}
+        >
+          <Pressable
+            onPress={(event) => event.stopPropagation()}
+            style={{
+              borderRadius: 16,
+              borderWidth: 1,
+              borderColor: uiColors.border,
+              backgroundColor: uiColors.surface,
+              padding: 16,
+              gap: 10
+            }}
+          >
+            <Row>
+              <Text style={{ fontWeight: "800", fontSize: 18, flex: 1 }}>
+                {selectedInstructorBio?.name ?? "Instructor"}
+              </Text>
+              <Pressable onPress={() => setSelectedInstructorBio(null)}>
+                <Text style={{ color: uiColors.accent, fontWeight: "700" }}>Close</Text>
+              </Pressable>
+            </Row>
+            {selectedInstructorBio?.imageUrl ? (
+              <Image
+                source={{ uri: selectedInstructorBio.imageUrl }}
+                style={{
+                  width: "100%",
+                  height: 220,
+                  borderRadius: 14,
+                  backgroundColor: uiColors.surfaceAlt
+                }}
+                resizeMode="cover"
+              />
+            ) : null}
+            <Text style={{ color: uiColors.text, lineHeight: 22 }}>
+              {selectedInstructorBio?.about?.trim()
+                ? selectedInstructorBio.about
+                : "Instructor bio coming soon."}
+            </Text>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </Screen>
   );
 }
 
 function ScheduleBlock({
   schedule,
-  compact
+  compact,
+  onPressInstructor
 }: {
   schedule: ClassScheduleTemplate;
   compact?: boolean;
+  onPressInstructor: (schedule: ClassScheduleTemplate) => void;
 }) {
   const instructor = [schedule.instructorFirstName, schedule.instructorLastName]
     .filter(Boolean)
     .join(" ");
   const classStatus = schedule.isActive ? "Active" : "Cancelled";
   const isCancelled = !schedule.isActive;
+  const canOpenInstructorBio = Boolean(instructor);
 
   return (
     <Card
@@ -178,9 +265,24 @@ function ScheduleBlock({
       <Text style={{ color: uiColors.muted }}>
         {formatClockTime(schedule.startTime)} - {formatClockTime(schedule.endTime)}
       </Text>
-      <Text style={{ color: uiColors.muted }}>
-        {instructor ? `Instructor: ${instructor}` : "Instructor: TBD"}
-      </Text>
+      {canOpenInstructorBio ? (
+        <Pressable
+          onPress={() => onPressInstructor(schedule)}
+          hitSlop={8}
+          style={{
+            marginTop: 2,
+            alignSelf: "flex-start",
+            borderBottomWidth: 1,
+            borderBottomColor: uiColors.accent
+          }}
+        >
+          <Text style={{ color: uiColors.accent, fontWeight: "700" }}>
+            Instructor: {instructor} (Tap for bio)
+          </Text>
+        </Pressable>
+      ) : (
+        <Text style={{ color: uiColors.muted }}>Instructor: TBD</Text>
+      )}
       {isCancelled ? (
         <Text style={{ color: "#fca5a5", fontWeight: "700" }}>
           Cancelled by admin. Please check Mamute News for updates.

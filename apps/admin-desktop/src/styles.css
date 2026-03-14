@@ -710,6 +710,24 @@ select.input {
   object-fit: contain;
 }
 
+.instructor-preview-image {
+  width: min(220px, 100%);
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid #2a2a2a;
+  background: #0b0b0b;
+}
+
+.instructor-table-image {
+  width: 54px;
+  height: 54px;
+  border-radius: 10px;
+  border: 1px solid #2a2a2a;
+  object-fit: cover;
+  background: #0b0b0b;
+}
+
 @media (max-width: 900px) {
   .app {
     padding: 20px 20px 40px;

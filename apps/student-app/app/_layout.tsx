@@ -108,7 +108,10 @@ function RootLayoutNav() {
       }
 
       const projectId =
-        Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+        Constants.expoConfig?.extra?.eas?.projectId ??
+        Constants.easConfig?.projectId ??
+        (Constants as any)?.manifest2?.extra?.eas?.projectId ??
+        (Constants as any)?.manifest?.extra?.eas?.projectId;
       const tokenResponse = await Notifications.getExpoPushTokenAsync(
         projectId ? { projectId } : undefined
       );

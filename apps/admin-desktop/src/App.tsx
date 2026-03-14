@@ -52,6 +52,10 @@ type InstructorRecord = {
   first_name: string | null;
   last_name: string | null;
   email: string;
+  about: string | null;
+  image_path: string | null;
+  image_name: string | null;
+  image_mime_type: string | null;
 };
 
 type InstructorQualificationRecord = {
@@ -265,6 +269,7 @@ const shopSizeOptions: ShopMerchandiseSize[] = ["XS", "S", "M", "L", "XL", "XXL"
 const newsBucket = "mamute-news";
 const badgesBucket = "mamute-badges";
 const shopBucket = "mamute-shop";
+const instructorsBucket = "mamute-instructors";
 
 type AdminTab =
   | "frontdesk"
@@ -366,6 +371,9 @@ export function App() {
   const [instructorFirstName, setInstructorFirstName] = useState("");
   const [instructorLastName, setInstructorLastName] = useState("");
   const [instructorEmail, setInstructorEmail] = useState("");
+  const [instructorAbout, setInstructorAbout] = useState("");
+  const [instructorImage, setInstructorImage] = useState<File | null>(null);
+  const [removeInstructorImage, setRemoveInstructorImage] = useState(false);
   const [qualifications, setQualifications] = useState<InstructorQualificationRecord[]>([]);
   const [isQualificationsLoading, setIsQualificationsLoading] = useState(false);
   const [selectedInstructorId, setSelectedInstructorId] = useState("");
@@ -3032,6 +3040,9 @@ export function App() {
     setInstructorFirstName(instructor.first_name ?? "");
     setInstructorLastName(instructor.last_name ?? "");
     setInstructorEmail(instructor.email);
+    setInstructorAbout(instructor.about ?? "");
+    setInstructorImage(null);
+    setRemoveInstructorImage(false);
   };
 
   const resetInstructorForm = () => {
@@ -3039,6 +3050,17 @@ export function App() {
     setInstructorFirstName("");
     setInstructorLastName("");
     setInstructorEmail("");
+    setInstructorAbout("");
+    setInstructorImage(null);
+    setRemoveInstructorImage(false);
+  };
+
+  const handleInstructorImageChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const nextFile = event.target.files?.[0] ?? null;
+    setInstructorImage(nextFile);
+    if (nextFile) {
+      setRemoveInstructorImage(false);
+    }
   };
 
   const submitInstructor = async (event: FormEvent) => {
@@ -3049,13 +3071,51 @@ export function App() {
       return;
     }
 
+    const existingInstructor = editingInstructorId
+      ? instructors.find((item) => item.id === editingInstructorId) ?? null
+      : null;
+    let imagePath: string | null = existingInstructor?.image_path ?? null;
+    let imageName: string | null = existingInstructor?.image_name ?? null;
+    let imageMimeType: string | null = existingInstructor?.image_mime_type ?? null;
+    let uploadedReplacementPath: string | null = null;
+
+    if (removeInstructorImage) {
+      imagePath = null;
+      imageName = null;
+      imageMimeType = null;
+    }
+
     const payload = {
       first_name: instructorFirstName.trim() || null,
       last_name: instructorLastName.trim() || null,
-      email: instructorEmail.trim()
+      email: instructorEmail.trim(),
+      about: instructorAbout.trim() || null,
+      image_path: imagePath,
+      image_name: imageName,
+      image_mime_type: imageMimeType
     };
 
     try {
+      if (instructorImage) {
+        const extension = instructorImage.name.includes(".")
+          ? instructorImage.name.split(".").pop()
+          : "";
+        const filename = `${crypto.randomUUID()}${extension ? `.${extension}` : ""}`;
+        const path = `profiles/${new Date().toISOString().slice(0, 10)}/${filename}`;
+        const { error: uploadError } = await supabase.storage
+          .from(instructorsBucket)
+          .upload(path, instructorImage, {
+            upsert: false,
+            contentType: instructorImage.type || undefined
+          });
+        if (uploadError) throw uploadError;
+
+        payload.image_path = path;
+        payload.image_name = instructorImage.name;
+        payload.image_mime_type = instructorImage.type || null;
+        uploadedReplacementPath = path;
+      }
+
       if (editingInstructorId) {
         const { error } = await supabase
           .from("instructors")
@@ -3066,9 +3126,22 @@ export function App() {
         const { error } = await supabase.from("instructors").insert(payload);
         if (error) throw error;
       }
+
+      if (
+        editingInstructorId &&
+        existingInstructor?.image_path &&
+        (removeInstructorImage ||
+          (uploadedReplacementPath && existingInstructor.image_path !== uploadedReplacementPath))
+      ) {
+        await supabase.storage.from(instructorsBucket).remove([existingInstructor.image_path]);
+      }
+
       resetInstructorForm();
       await loadInstructors();
     } catch (error: any) {
+      if (uploadedReplacementPath) {
+        await supabase.storage.from(instructorsBucket).remove([uploadedReplacementPath]);
+      }
       setInstructorsMessage(error?.message ?? "Failed to save instructor");
     }
   };
@@ -3079,11 +3152,15 @@ export function App() {
     if (!confirmed) return;
     setInstructorsMessage(null);
     try {
+      const targetInstructor = instructors.find((item) => item.id === instructorId) ?? null;
       const { error } = await supabase
         .from("instructors")
         .delete()
         .eq("id", instructorId);
       if (error) throw error;
+      if (targetInstructor?.image_path) {
+        await supabase.storage.from(instructorsBucket).remove([targetInstructor.image_path]);
+      }
       await loadInstructors();
     } catch (error: any) {
       setInstructorsMessage(error?.message ?? "Failed to delete instructor");
@@ -3438,6 +3515,14 @@ export function App() {
     : null;
   const previewShopItemUrl = previewShopItem?.image_path
     ? supabase.storage.from(shopBucket).getPublicUrl(previewShopItem.image_path).data.publicUrl
+    : null;
+  const editingInstructor = editingInstructorId
+    ? instructors.find((instructor) => instructor.id === editingInstructorId) ?? null
+    : null;
+  const editingInstructorImageUrl = editingInstructor?.image_path
+    ? supabase.storage
+        .from(instructorsBucket)
+        .getPublicUrl(editingInstructor.image_path).data.publicUrl
     : null;
 
   const attendanceSummary = useMemo(
@@ -5240,6 +5325,53 @@ export function App() {
                 disabled={!session}
               />
             </label>
+            <label className="field" style={{ width: "100%" }}>
+              <span>About</span>
+              <textarea
+                className="input"
+                rows={4}
+                value={instructorAbout}
+                onChange={(event) => setInstructorAbout(event.target.value)}
+                placeholder="Share instructor bio, certifications, coaching style, and specialties."
+                disabled={!session}
+              />
+            </label>
+            <label className="field">
+              <span>Profile Image</span>
+              <input
+                className="input"
+                type="file"
+                accept="image/*"
+                onChange={handleInstructorImageChange}
+                disabled={!session}
+              />
+              {instructorImage ? (
+                <span className="helper">Selected: {instructorImage.name}</span>
+              ) : editingInstructor?.image_name ? (
+                <span className="helper">Current: {editingInstructor.image_name}</span>
+              ) : (
+                <span className="helper">Optional: add a profile image for schedule bio popups.</span>
+              )}
+            </label>
+            {editingInstructorImageUrl && !instructorImage ? (
+              <div className="field">
+                <span>Current Image Preview</span>
+                <img
+                  src={editingInstructorImageUrl}
+                  alt={getInstructorLabel(editingInstructor)}
+                  className="instructor-preview-image"
+                />
+                <label className="helper" style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={removeInstructorImage}
+                    onChange={(event) => setRemoveInstructorImage(event.target.checked)}
+                    disabled={!session}
+                  />
+                  Remove current image on save
+                </label>
+              </div>
+            ) : null}
             <div className="form-actions">
               <button className="button" type="submit" disabled={!session}>
                 {editingInstructorId ? "Update Instructor" : "Add Instructor"}
@@ -5262,16 +5394,40 @@ export function App() {
               <table className="table">
                 <thead>
                   <tr>
+                    <th>Photo</th>
                     <th>Name</th>
                     <th>Email</th>
+                    <th>About</th>
                     <th />
                   </tr>
                 </thead>
                 <tbody>
                   {instructors.map((instructor) => (
                     <tr key={instructor.id}>
+                      <td>
+                        {instructor.image_path ? (
+                          <img
+                            src={
+                              supabase.storage
+                                .from(instructorsBucket)
+                                .getPublicUrl(instructor.image_path).data.publicUrl
+                            }
+                            alt={getInstructorLabel(instructor)}
+                            className="instructor-table-image"
+                          />
+                        ) : (
+                          <span className="muted">-</span>
+                        )}
+                      </td>
                       <td>{getInstructorLabel(instructor)}</td>
                       <td>{instructor.email}</td>
+                      <td>
+                        {instructor.about ? (
+                          <span>{instructor.about}</span>
+                        ) : (
+                          <span className="muted">No bio added</span>
+                        )}
+                      </td>
                       <td>
                         <div className="row-actions">
                           <button

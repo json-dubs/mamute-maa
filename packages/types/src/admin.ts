@@ -27,6 +27,11 @@ export interface InstructorRecord {
   firstName?: string | null;
   lastName?: string | null;
   email: string;
+  about?: string | null;
+  imagePath?: string | null;
+  imageName?: string | null;
+  imageMimeType?: string | null;
+  imageUrl?: string | null;
 }
 
 export interface InstructorQualification {
@@ -40,6 +45,11 @@ export interface ClassScheduleTemplate {
   instructorId?: string | null;
   instructorFirstName?: string | null;
   instructorLastName?: string | null;
+  instructorAbout?: string | null;
+  instructorImagePath?: string | null;
+  instructorImageName?: string | null;
+  instructorImageMimeType?: string | null;
+  instructorImageUrl?: string | null;
   dayOfWeek: number;
   startTime: string;
   endTime: string;
