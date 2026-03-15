@@ -6356,7 +6356,11 @@ function safeTimeZone(timezone: string) {
 }
 
 function isTauriDesktopRuntime() {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  if (typeof window === "undefined") return false;
+  if ("__TAURI_INTERNALS__" in window) return true;
+  const protocol = window.location?.protocol?.toLowerCase() ?? "";
+  const origin = window.location?.origin?.toLowerCase() ?? "";
+  return protocol === "tauri:" || origin.startsWith("tauri://");
 }
 
 function parseInviteUrl(rawUrl: string) {
