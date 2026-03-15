@@ -505,6 +505,12 @@ export function App() {
             refresh_token: parsed.refreshToken
           });
           if (error) throw error;
+        } else if (parsed.tokenHash && isSupportedOtpType(parsed.inviteType)) {
+          const { error } = await supabase.auth.verifyOtp({
+            type: parsed.inviteType,
+            token_hash: parsed.tokenHash
+          });
+          if (error) throw error;
         }
 
         setInviteMessage("Set your password to finish admin account setup.");
@@ -6359,6 +6365,7 @@ function parseInviteUrl(rawUrl: string) {
     const searchParams = parsed.searchParams;
     const hashParams = new URLSearchParams(parsed.hash.replace(/^#/, ""));
     const inviteType = hashParams.get("type") ?? searchParams.get("type");
+    const tokenHash = searchParams.get("token_hash") ?? searchParams.get("token");
     const code = searchParams.get("code");
     const accessToken = hashParams.get("access_token");
     const refreshToken = hashParams.get("refresh_token");
@@ -6366,10 +6373,13 @@ function parseInviteUrl(rawUrl: string) {
       inviteType === "invite" ||
       inviteType === "recovery" ||
       Boolean(code) ||
+      Boolean(tokenHash) ||
       (Boolean(accessToken) && Boolean(refreshToken));
 
     return {
       shouldHandle,
+      inviteType,
+      tokenHash,
       code,
       accessToken,
       refreshToken
@@ -6377,11 +6387,17 @@ function parseInviteUrl(rawUrl: string) {
   } catch {
     return {
       shouldHandle: false,
+      inviteType: null,
+      tokenHash: null,
       code: null,
       accessToken: null,
       refreshToken: null
     };
   }
+}
+
+function isSupportedOtpType(value: string | null): value is "invite" | "recovery" {
+  return value === "invite" || value === "recovery";
 }
 
 function isLocalhostUrl(value: string) {
