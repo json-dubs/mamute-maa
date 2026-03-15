@@ -1,5 +1,6 @@
-import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createClient, Session } from "@supabase/supabase-js";
+import { getCurrent as getCurrentDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import headerImage from "../../student-app/assets/images/MamuteLogoHeader.png";
 
 type CheckInResult = {
@@ -461,6 +462,7 @@ export function App() {
   const [isBadgeSaving, setIsBadgeSaving] = useState(false);
   const [isBadgeAssigning, setIsBadgeAssigning] = useState(false);
   const [activeTab, setActiveTab] = useState<AdminTab>("frontdesk");
+  const handledInviteUrlsRef = useRef<Set<string>>(new Set());
 
   const supabase = useMemo(() => {
     const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -480,47 +482,78 @@ export function App() {
   }, [supabase]);
 
   useEffect(() => {
-    const initializeInviteFlow = async () => {
-      const searchParams = new URLSearchParams(window.location.search);
-      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-      const inviteType = hashParams.get("type") ?? searchParams.get("type");
-      const code = searchParams.get("code");
-      const accessToken = hashParams.get("access_token");
-      const refreshToken = hashParams.get("refresh_token");
-      const shouldHandleInvite =
-        inviteType === "invite" ||
-        inviteType === "recovery" ||
-        Boolean(code) ||
-        (Boolean(accessToken) && Boolean(refreshToken));
+    let disposed = false;
+    let unlistenDeepLink: (() => void) | undefined;
 
-      if (!shouldHandleInvite) return;
+    const handleInviteUrl = async (rawUrl: string, clearBrowserAddress: boolean) => {
+      if (!rawUrl || handledInviteUrlsRef.current.has(rawUrl)) return;
+      const parsed = parseInviteUrl(rawUrl);
+      if (!parsed.shouldHandle) return;
+      handledInviteUrlsRef.current.add(rawUrl);
 
       setIsInviteMode(true);
       setIsInviteInitializing(true);
       setInviteMessage("Validating invite link...");
 
       try {
-        if (code) {
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
+        if (parsed.code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(parsed.code);
           if (error) throw error;
-        } else if (accessToken && refreshToken) {
+        } else if (parsed.accessToken && parsed.refreshToken) {
           const { error } = await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken
+            access_token: parsed.accessToken,
+            refresh_token: parsed.refreshToken
           });
           if (error) throw error;
         }
 
         setInviteMessage("Set your password to finish admin account setup.");
-        window.history.replaceState({}, document.title, window.location.pathname);
+        if (clearBrowserAddress) {
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
       } catch (error: any) {
         setInviteMessage(error?.message ?? "Invite link is invalid or expired.");
       } finally {
-        setIsInviteInitializing(false);
+        if (!disposed) {
+          setIsInviteInitializing(false);
+        }
+      }
+    };
+
+    const initializeInviteFlow = async () => {
+      await handleInviteUrl(window.location.href, true);
+
+      try {
+        const launchUrls = await getCurrentDeepLinks();
+        if (launchUrls?.length) {
+          for (const url of launchUrls) {
+            await handleInviteUrl(url, false);
+          }
+        }
+      } catch {
+        // Ignore deep-link plugin failures in browser/dev mode.
+      }
+
+      try {
+        unlistenDeepLink = await onOpenUrl((urls) => {
+          urls.forEach((url) => {
+            void handleInviteUrl(url, false);
+          });
+        });
+        if (disposed && unlistenDeepLink) {
+          unlistenDeepLink();
+        }
+      } catch {
+        // Windows/Linux may not emit open-url events without single-instance plugin.
       }
     };
 
     void initializeInviteFlow();
+
+    return () => {
+      disposed = true;
+      if (unlistenDeepLink) unlistenDeepLink();
+    };
   }, [supabase]);
 
   useEffect(() => {
@@ -1017,7 +1050,9 @@ export function App() {
           ? configuredRedirect
           : runtimeRedirectCandidate && !isLocalhostUrl(runtimeRedirectCandidate)
             ? runtimeRedirectCandidate
-            : undefined;
+            : isTauriDesktopRuntime()
+              ? "mamute://invite"
+              : undefined;
       const { data, error } = await supabase.functions.invoke("createAdminUser", {
         headers: { Authorization: `Bearer ${session.access_token}` },
         body: {
@@ -6307,6 +6342,41 @@ function safeTimeZone(timezone: string) {
     return timezone;
   } catch {
     return "America/Toronto";
+  }
+}
+
+function isTauriDesktopRuntime() {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+function parseInviteUrl(rawUrl: string) {
+  try {
+    const parsed = new URL(rawUrl);
+    const searchParams = parsed.searchParams;
+    const hashParams = new URLSearchParams(parsed.hash.replace(/^#/, ""));
+    const inviteType = hashParams.get("type") ?? searchParams.get("type");
+    const code = searchParams.get("code");
+    const accessToken = hashParams.get("access_token");
+    const refreshToken = hashParams.get("refresh_token");
+    const shouldHandle =
+      inviteType === "invite" ||
+      inviteType === "recovery" ||
+      Boolean(code) ||
+      (Boolean(accessToken) && Boolean(refreshToken));
+
+    return {
+      shouldHandle,
+      code,
+      accessToken,
+      refreshToken
+    };
+  } catch {
+    return {
+      shouldHandle: false,
+      code: null,
+      accessToken: null,
+      refreshToken: null
+    };
   }
 }
 

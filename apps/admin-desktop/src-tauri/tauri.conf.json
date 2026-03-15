@@ -31,5 +31,14 @@
       "nsis",
       "msi"
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "mamute"
+        ]
+      }
+    }
   }
 }
