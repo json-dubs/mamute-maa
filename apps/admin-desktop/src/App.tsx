@@ -1045,13 +1045,14 @@ export function App() {
         runtimeOrigin.startsWith("http://") || runtimeOrigin.startsWith("https://")
           ? runtimeOrigin
           : undefined;
+      const desktopInviteRedirect = "mamute://invite";
       const redirectTo =
         configuredRedirect && !isLocalhostUrl(configuredRedirect)
           ? configuredRedirect
-          : runtimeRedirectCandidate && !isLocalhostUrl(runtimeRedirectCandidate)
-            ? runtimeRedirectCandidate
-            : isTauriDesktopRuntime()
-              ? "mamute://invite"
+          : isTauriDesktopRuntime()
+            ? desktopInviteRedirect
+            : runtimeRedirectCandidate && !isLocalhostUrl(runtimeRedirectCandidate)
+              ? runtimeRedirectCandidate
               : undefined;
       const { data, error } = await supabase.functions.invoke("createAdminUser", {
         headers: { Authorization: `Bearer ${session.access_token}` },
@@ -6384,7 +6385,12 @@ function isLocalhostUrl(value: string) {
   try {
     const parsed = new URL(value);
     const host = parsed.hostname.toLowerCase();
-    return host === "localhost" || host === "127.0.0.1";
+    return (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "::1" ||
+      host.endsWith(".localhost")
+    );
   } catch {
     return false;
   }
