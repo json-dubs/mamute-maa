@@ -86,6 +86,29 @@ function resolveRedirectTo(payloadRedirectTo?: string, requestOrigin?: string) {
   return undefined;
 }
 
+function getInviteTokenFromActionLink(actionLink?: string | null) {
+  if (!actionLink) return null;
+  try {
+    const parsed = new URL(actionLink);
+    return parsed.searchParams.get("token_hash") ?? parsed.searchParams.get("token");
+  } catch {
+    return null;
+  }
+}
+
+function buildDirectInviteDeepLink(redirectTo: string | undefined, tokenHash: string | null) {
+  if (!redirectTo || !tokenHash) return null;
+  try {
+    const parsed = new URL(redirectTo);
+    parsed.searchParams.set("type", "invite");
+    parsed.searchParams.set("token_hash", tokenHash);
+    return parsed.toString();
+  } catch {
+    const joiner = redirectTo.includes("?") ? "&" : "?";
+    return `${redirectTo}${joiner}type=invite&token_hash=${encodeURIComponent(tokenHash)}`;
+  }
+}
+
 async function upsertAdminProfile(
   supabase: ReturnType<typeof createClient>,
   params: { userId: string; firstName: string; lastName: string; email: string }
@@ -258,7 +281,11 @@ Deno.serve(async (req) => {
         }
 
         createdUserId = generated.user.id;
-        inviteLink = generated.properties?.action_link ?? null;
+        const actionLink = generated.properties?.action_link ?? null;
+        const tokenHash =
+          generated.properties?.hashed_token ??
+          getInviteTokenFromActionLink(actionLink);
+        inviteLink = buildDirectInviteDeepLink(redirectTo, tokenHash) ?? actionLink;
         delivery = "manual_link";
       } else {
         return jsonResponse(
@@ -282,7 +309,11 @@ Deno.serve(async (req) => {
         email,
         options: buildInviteOptions(firstName, lastName, redirectTo)
       });
-      inviteLink = generated?.properties?.action_link ?? null;
+      const actionLink = generated?.properties?.action_link ?? null;
+      const tokenHash =
+        generated?.properties?.hashed_token ??
+        getInviteTokenFromActionLink(actionLink);
+      inviteLink = buildDirectInviteDeepLink(redirectTo, tokenHash) ?? actionLink;
     }
 
     const { error: upsertError } = await upsertAdminProfile(supabase, {
