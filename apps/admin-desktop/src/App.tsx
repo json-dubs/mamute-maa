@@ -1,6 +1,8 @@
 import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createClient, Session } from "@supabase/supabase-js";
 import { getCurrent as getCurrentDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import headerImage from "../../student-app/assets/images/MamuteLogoHeader.png";
 
 type CheckInResult = {
@@ -484,6 +486,7 @@ export function App() {
   useEffect(() => {
     let disposed = false;
     let unlistenDeepLink: (() => void) | undefined;
+    let unlistenSingleInstance: (() => void) | undefined;
 
     const handleInviteUrl = async (rawUrl: string, clearBrowserAddress: boolean) => {
       if (!rawUrl || handledInviteUrlsRef.current.has(rawUrl)) return;
@@ -541,6 +544,16 @@ export function App() {
       }
 
       try {
+        const argv = await invoke<string[]>("startup_args");
+        const argUrls = extractDeepLinksFromArgs(argv);
+        for (const url of argUrls) {
+          await handleInviteUrl(url, false);
+        }
+      } catch {
+        // Ignore startup args lookup failures in browser/dev mode.
+      }
+
+      try {
         unlistenDeepLink = await onOpenUrl((urls) => {
           urls.forEach((url) => {
             void handleInviteUrl(url, false);
@@ -552,6 +565,21 @@ export function App() {
       } catch {
         // Windows/Linux may not emit open-url events without single-instance plugin.
       }
+
+      try {
+        unlistenSingleInstance = await listen<{
+          args?: string[];
+          cwd?: string;
+        }>("single-instance", (event) => {
+          const args = event.payload?.args ?? [];
+          const urls = extractDeepLinksFromArgs(args);
+          urls.forEach((url) => {
+            void handleInviteUrl(url, false);
+          });
+        });
+      } catch {
+        // Ignore single-instance listener failures in browser/dev mode.
+      }
     };
 
     void initializeInviteFlow();
@@ -559,6 +587,7 @@ export function App() {
     return () => {
       disposed = true;
       if (unlistenDeepLink) unlistenDeepLink();
+      if (unlistenSingleInstance) unlistenSingleInstance();
     };
   }, [supabase]);
 
@@ -6402,6 +6431,13 @@ function parseInviteUrl(rawUrl: string) {
 
 function isSupportedOtpType(value: string | null): value is "invite" | "recovery" {
   return value === "invite" || value === "recovery";
+}
+
+function extractDeepLinksFromArgs(args: string[] | null | undefined) {
+  if (!args?.length) return [];
+  return args
+    .map((item) => item.trim().replace(/^"+|"+$/g, ""))
+    .filter((item) => item.toLowerCase().startsWith("mamute://"));
 }
 
 function isLocalhostUrl(value: string) {
