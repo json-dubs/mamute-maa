@@ -1077,11 +1077,14 @@ export function App() {
           `Email send limit reached. Share this invite link manually: ${result.inviteLink}`
         );
       } else {
+        const fallbackLink = result.inviteLink
+          ? ` Manual invite link: ${result.inviteLink}`
+          : "";
         const redirectInfo = result.redirectTo
           ? ` Redirect: ${result.redirectTo}`
           : " Redirect not set in invite. Configure VITE_ADMIN_INVITE_REDIRECT_URL for non-local invite completion.";
         setAdminCreateMessage(
-          `Invite sent. They will set their password by email.${redirectInfo}`
+          `Invite sent. They will set their password by email.${redirectInfo}${fallbackLink}`
         );
       }
     } catch (error: any) {

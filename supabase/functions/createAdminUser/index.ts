@@ -274,6 +274,17 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: "CREATE_ADMIN_FAILED" }, 400);
     }
 
+    // Always try to provide a manual fallback link even when email delivery succeeded.
+    // This makes invites operational if mailbox delivery is delayed or filtered.
+    if (!inviteLink) {
+      const { data: generated } = await supabase.auth.admin.generateLink({
+        type: "invite",
+        email,
+        options: buildInviteOptions(firstName, lastName, redirectTo)
+      });
+      inviteLink = generated?.properties?.action_link ?? null;
+    }
+
     const { error: upsertError } = await upsertAdminProfile(supabase, {
       userId: createdUserId,
       firstName,
